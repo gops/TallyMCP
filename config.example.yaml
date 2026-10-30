@@ -1,0 +1,51 @@
+# Tally ERP & TallyPrime MCP Server Configuration
+# MIT Licensed Open Source Project
+
+server:
+  # Network address to listen on for MCP clients.
+  # "0.0.0.0:8080" binds to all network interfaces, allowing any device on your LAN to connect.
+  # Use "127.0.0.1:8080" to only allow connections from the same machine.
+  listen_address: "0.0.0.0:8080"
+
+  # Transport mode:
+  # - "sse": HTTP Server-Sent Events (recommended for Local Network MCP access)
+  # - "stdio": Standard I/O (for local CLI / desktop agents spawning the exe directly)
+  transport: "sse"
+
+tally:
+  # HTTP address where Tally ERP 9 or TallyPrime is running.
+  # To enable in Tally:
+  #   - TallyPrime: F1 (Help) -> Settings -> Connectivity -> Client/Server Configuration -> Tally is acting as: Both -> Port: 9000
+  #   - Tally ERP 9: F12 (Configure) -> Advanced Configuration -> Tally is acting as: Both -> Port: 9000
+  url: "http://localhost:9000"
+
+  # Request timeout in seconds for Tally responses
+  timeout_seconds: 30
+
+  # Specific company name (leave empty to query whichever company is currently open in Tally)
+  default_company: ""
+
+auth:
+  # Enable authentication to prevent unauthorized devices on your LAN from accessing Tally
+  enabled: false
+
+  # Secret token required from MCP clients.
+  # MCP clients can provide this via:
+  #   1. Header: Authorization: Bearer <api_key>
+  #   2. Header: X-API-Key: <api_key>
+  #   3. Query parameter: http://<ip>:8080/sse?token=<api_key>
+  api_key: "change-this-to-a-secure-random-string"
+
+updater:
+  # GitHub repository coordinates to check for new releases (owner/repo)
+  github_repo: "owner/tally-mcp"
+
+  # Automatically check for updates on application startup (prints notification in console)
+  check_on_startup: true
+
+  # Automatically download and replace binary if a new release is found on startup
+  auto_apply: false
+
+log:
+  # Logging verbosity: "debug", "info", "warn", "error"
+  level: "info"

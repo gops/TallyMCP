@@ -1,0 +1,15 @@
+# Binaries and build artifacts
+bin/
+dist/
+*.exe
+*.exe.old
+*.tmp
+*.zip
+*.tar.gz
+
+# Local configuration overrides
+config.yaml
+
+# OS files
+.DS_Store
+Thumbs.db
