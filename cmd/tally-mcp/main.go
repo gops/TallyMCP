@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -220,6 +221,11 @@ func main() {
 	}
 
 	// Step 8: Run System Tray (runs on main thread on Windows; blocks until exit)
+	var (
+		lastUpdateInfo *updater.UpdateInfo
+		updateMu       sync.Mutex
+	)
+
 	trayCfg := tray.Config{
 		Version:    Version,
 		ListenURL:  "http://" + cfg.Server.ListenAddress,
@@ -231,7 +237,27 @@ func main() {
 			if err != nil {
 				return false, "", "", err
 			}
+			updateMu.Lock()
+			lastUpdateInfo = info
+			updateMu.Unlock()
 			return info.HasUpdate, info.LatestVersion, info.ReleaseNotes, nil
+		},
+		OnApplyUpdate: func(c context.Context, progressFn func(downloaded, total int64)) error {
+			updateMu.Lock()
+			info := lastUpdateInfo
+			updateMu.Unlock()
+
+			if info == nil || !info.HasUpdate {
+				var err error
+				info, err = updater.CheckForUpdate(c, Version, cfg.Updater.GitHubRepo)
+				if err != nil {
+					return err
+				}
+				if !info.HasUpdate {
+					return fmt.Errorf("already running the latest version (%s)", Version)
+				}
+			}
+			return updater.ApplyUpdate(c, info, progressFn)
 		},
 		OnQuit: func() {
 			cancel()

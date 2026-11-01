@@ -5,6 +5,7 @@ package tray
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -77,7 +78,10 @@ const (
 	MB_OK           = 0x00000000
 	MB_YESNO        = 0x00000004
 	MB_ICONINFO     = 0x00000040
+	MB_ICONQUESTION = 0x00000020
+	MB_ICONERROR    = 0x00000010
 	IDYES           = 6
+	IDNO            = 7
 )
 
 const (
@@ -187,6 +191,56 @@ func openFile(path string) {
 	procShellExecuteW.Call(0, uintptr(unsafe.Pointer(openPtr)), uintptr(unsafe.Pointer(pathPtr)), 0, 0, 1)
 }
 
+func showTrayBalloon(title, msg string) {
+	trayMu.Lock()
+	defer trayMu.Unlock()
+	if currentHwnd == 0 {
+		return
+	}
+	currentNID.uFlags = NIF_INFO
+	currentNID.szInfoTitle = stringToUTF16Array64(title)
+	currentNID.szInfo = stringToUTF16Array256(msg)
+	currentNID.dwInfoFlags = NIIF_INFO
+	procShell_NotifyIconW.Call(NIM_MODIFY, uintptr(unsafe.Pointer(&currentNID)))
+}
+
+func updateTrayTooltip(tip string) {
+	trayMu.Lock()
+	defer trayMu.Unlock()
+	if currentHwnd == 0 {
+		return
+	}
+	currentNID.uFlags = NIF_TIP
+	currentNID.szTip = stringToUTF16Array128(tip)
+	procShell_NotifyIconW.Call(NIM_MODIFY, uintptr(unsafe.Pointer(&currentNID)))
+}
+
+func restartApplication(hwnd uintptr, cfg Config) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return
+	}
+	exePath, err = filepath.EvalSymlinks(exePath)
+	if err != nil {
+		return
+	}
+
+	// Command to wait ~1.5s for current instance to exit cleanly and release TCP port 8080,
+	// then start the new binary without opening a command window.
+	// ping 127.0.0.1 -n 2 >nul provides a reliable ~1.5s delay across all Windows versions.
+	cmdLine := fmt.Sprintf("/c ping 127.0.0.1 -n 2 >nul & start \"\" \"%s\"", exePath)
+	cmdPtr, _ := syscall.UTF16PtrFromString("cmd.exe")
+	argPtr, _ := syscall.UTF16PtrFromString(cmdLine)
+	openPtr, _ := syscall.UTF16PtrFromString("open")
+	dirPtr, _ := syscall.UTF16PtrFromString(filepath.Dir(exePath))
+
+	// SW_HIDE = 0 so no cmd window is shown
+	procShellExecuteW.Call(0, uintptr(unsafe.Pointer(openPtr)), uintptr(unsafe.Pointer(cmdPtr)), uintptr(unsafe.Pointer(argPtr)), uintptr(unsafe.Pointer(dirPtr)), 0)
+
+	// Close tray window cleanly (which triggers cleanup and shutdown)
+	procPostMessageW.Call(hwnd, WM_CLOSE, 0, 0)
+}
+
 func wndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 	switch message {
 	case WM_TRAYICON:
@@ -255,27 +309,83 @@ func wndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 		case idCheckUpdate:
 			go func() {
 				if cfg.OnCheckUpdate != nil {
-					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 					defer cancel()
 
 					hasUpdate, newVer, notes, err := cfg.OnCheckUpdate(ctx)
 					titlePtr, _ := syscall.UTF16PtrFromString("Tally MCP Update Check")
 					if err != nil {
 						msgPtr, _ := syscall.UTF16PtrFromString(fmt.Sprintf("Failed to check for updates: %v", err))
+						procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(msgPtr)), uintptr(unsafe.Pointer(titlePtr)), MB_OK|MB_ICONERROR)
+						return
+					}
+
+					if !hasUpdate {
+						msgPtr, _ := syscall.UTF16PtrFromString(fmt.Sprintf("You are running the latest version (%s). No updates available.", cfg.Version))
 						procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(msgPtr)), uintptr(unsafe.Pointer(titlePtr)), MB_OK|MB_ICONINFO)
 						return
 					}
 
-					if hasUpdate {
-						prompt := fmt.Sprintf("A newer version (%s) is available!\n\nRelease Notes:\n%s\n\nWould you like to open the GitHub Releases page?", newVer, notes)
-						msgPtr, _ := syscall.UTF16PtrFromString(prompt)
-						res, _, _ := procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(msgPtr)), uintptr(unsafe.Pointer(titlePtr)), MB_YESNO|MB_ICONINFO)
-						if res == IDYES {
+					// User prompt: ask whether they want to download and install the update
+					var prompt string
+					cleanNotes := strings.TrimSpace(notes)
+					if cleanNotes != "" {
+						if len(cleanNotes) > 300 {
+							cleanNotes = cleanNotes[:300] + "..."
+						}
+						prompt = fmt.Sprintf("A new version (%s) is available!\n\nRelease Notes:\n%s\n\nDo you want to download and install the same?", newVer, cleanNotes)
+					} else {
+						prompt = fmt.Sprintf("A new version (%s) is available!\n\nDo you want to download and install the same?", newVer)
+					}
+
+					msgPtr, _ := syscall.UTF16PtrFromString(prompt)
+					res, _, _ := procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(msgPtr)), uintptr(unsafe.Pointer(titlePtr)), MB_YESNO|MB_ICONQUESTION)
+					if res != IDYES {
+						return
+					}
+
+					if cfg.OnApplyUpdate == nil {
+						openURL(fmt.Sprintf("https://github.com/%s/releases", cfg.GitHubRepo))
+						return
+					}
+
+					// Notify that download is starting
+					showTrayBalloon("Tally MCP Update", fmt.Sprintf("Downloading and installing %s in background...", newVer))
+					updateTrayTooltip(fmt.Sprintf("Tally MCP (Downloading %s...)", newVer))
+
+					applyCtx, applyCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+					defer applyCancel()
+
+					var lastProgress time.Time
+					applyErr := cfg.OnApplyUpdate(applyCtx, func(downloaded, total int64) {
+						if total > 0 && time.Since(lastProgress) > 1500*time.Millisecond {
+							lastProgress = time.Now()
+							pct := (downloaded * 100) / total
+							updateTrayTooltip(fmt.Sprintf("Tally MCP (Downloading %s: %d%%)", newVer, pct))
+						}
+					})
+
+					// Restore default tooltip
+					updateTrayTooltip(fmt.Sprintf("Tally MCP Server (%s)", cfg.Version))
+
+					if applyErr != nil {
+						failMsg := fmt.Sprintf("Failed to download and install update: %v\n\nWould you like to open the GitHub Releases page to download it manually?", applyErr)
+						failPtr, _ := syscall.UTF16PtrFromString(failMsg)
+						resFail, _, _ := procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(failPtr)), uintptr(unsafe.Pointer(titlePtr)), MB_YESNO|MB_ICONERROR)
+						if resFail == IDYES {
 							openURL(fmt.Sprintf("https://github.com/%s/releases", cfg.GitHubRepo))
 						}
+						return
+					}
+
+					// Successfully installed -> ask to restart
+					successMsg := fmt.Sprintf("Update to %s has been downloaded and installed successfully!\n\nDo you want to restart Tally MCP now for changes to take effect?", newVer)
+					successPtr, _ := syscall.UTF16PtrFromString(successMsg)
+					resRestart, _, _ := procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(successPtr)), uintptr(unsafe.Pointer(titlePtr)), MB_YESNO|MB_ICONINFO)
+					if resRestart == IDYES {
+						restartApplication(hwnd, cfg)
 					} else {
-						msgPtr, _ := syscall.UTF16PtrFromString(fmt.Sprintf("You are running the latest version (%s). No updates available.", cfg.Version))
-						procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(msgPtr)), uintptr(unsafe.Pointer(titlePtr)), MB_OK|MB_ICONINFO)
+						showTrayBalloon("Tally MCP Update", fmt.Sprintf("Update %s installed. It will take effect next time you start Tally MCP.", newVer))
 					}
 				}
 			}()
