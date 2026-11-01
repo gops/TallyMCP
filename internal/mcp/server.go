@@ -7,6 +7,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -24,6 +26,15 @@ type Server struct {
 	mcpServer   *server.MCPServer
 	handlers    *ToolHandlers
 	version     string
+	activePort  int
+	mu          sync.Mutex
+}
+
+// ActivePort returns the currently bound network port.
+func (s *Server) ActivePort() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activePort
 }
 
 // NewServer initializes a new MCP Server with all tools registered.
@@ -159,12 +170,25 @@ func (s *Server) RunStdio(ctx context.Context) error {
 	return stdioServer.Listen(ctx, nil, nil)
 }
 
-// RunSSE starts serving MCP over HTTP Server-Sent Events (SSE) for Local Network access.
+// RunSSE starts serving MCP over HTTP Server-Sent Events (SSE) for Local Network access,
+// automatically finding an available port if the configured port is busy.
 func (s *Server) RunSSE(ctx context.Context) error {
-	addr := s.cfg.Server.ListenAddress
-	if addr == "" {
-		addr = "0.0.0.0:8080"
+	listener, _, _, _, err := BindAvailableListener(s.cfg.Server.ListenAddress)
+	if err != nil {
+		return err
 	}
+	return s.RunSSEWithListener(ctx, listener)
+}
+
+// RunSSEWithListener serves MCP over SSE using an already bound net.Listener.
+func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) error {
+	addr := listener.Addr().String()
+	_, portStr, _ := net.SplitHostPort(addr)
+	port, _ := strconv.Atoi(portStr)
+
+	s.mu.Lock()
+	s.activePort = port
+	s.mu.Unlock()
 
 	// Disable localhost protection so other machines on the LAN can connect cleanly
 	sseServer := server.NewSSEServer(s.mcpServer, server.WithSSEDisableLocalhostProtection(true))
@@ -180,6 +204,7 @@ func (s *Server) RunSSE(ctx context.Context) error {
 			"status":    "ok",
 			"version":   s.version,
 			"transport": "sse",
+			"port":      port,
 			"tally_url": s.tallyClient.BaseURL(),
 			"auth":      s.cfg.Auth.Enabled,
 			"timestamp": time.Now().Format(time.RFC3339),
@@ -203,7 +228,8 @@ func (s *Server) RunSSE(ctx context.Context) error {
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 40px; background: #0f172a; color: #f8fafc; }
     .card { background: #1e293b; border-radius: 12px; padding: 24px; max-width: 650px; margin: 0 auto; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); }
     h1 { margin-top: 0; color: #38bdf8; font-size: 24px; }
-    .badge { display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: bold; background: #0284c7; color: #fff; margin-bottom: 16px; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: bold; background: #0284c7; color: #fff; margin-bottom: 16px; margin-right: 6px; }
+    .port-badge { background: #10b981; }
     code { background: #0f172a; padding: 3px 6px; border-radius: 4px; color: #38bdf8; font-size: 13px; }
     pre { background: #0f172a; padding: 12px; border-radius: 8px; overflow-x: auto; color: #cbd5e1; font-size: 13px; }
     ul { padding-left: 20px; line-height: 1.6; }
@@ -214,6 +240,7 @@ func (s *Server) RunSSE(ctx context.Context) error {
   <div class="card">
     <h1>🚀 Tally ERP MCP Server</h1>
     <span class="badge">Version %s</span>
+    <span class="badge port-badge">Port %d</span>
     <p>This server bridges AI agents and MCP clients across your local network directly into Tally ERP 9 / TallyPrime.</p>
     
     <h3>Network Endpoints</h3>
@@ -233,28 +260,21 @@ func (s *Server) RunSSE(ctx context.Context) error {
     <pre>{
   "mcpServers": {
     "tally": {
-      "url": "http://&lt;server-ip&gt;:%s/sse"
+      "url": "http://&lt;server-ip&gt;:%d/sse"
     }
   }
 }</pre>
   </div>
 </body>
-</html>`, s.version, s.tallyClient.BaseURL(), func() string {
+</html>`, s.version, port, s.tallyClient.BaseURL(), func() string {
 			if s.cfg.Auth.Enabled {
 				return "Enabled (API Key required)"
 			}
 			return "Disabled (Open LAN)"
-		}(), func() string {
-			_, port, err := net.SplitHostPort(addr)
-			if err == nil {
-				return port
-			}
-			return "8080"
-		}())
+		}(), port)
 	})
 
 	httpServer := &http.Server{
-		Addr:    addr,
 		Handler: mux,
 	}
 
@@ -262,7 +282,7 @@ func (s *Server) RunSSE(ctx context.Context) error {
 	serverErr := make(chan error, 1)
 	go func() {
 		log.Printf("[INFO] MCP Server listening on http://%s (SSE: http://%s/sse)", addr, addr)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			serverErr <- err
 		}
 	}()

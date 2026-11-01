@@ -7,6 +7,9 @@ import (
 // Config holds configuration parameters and callbacks for the system tray application.
 type Config struct {
 	Version       string
+	Port          int
+	PortChanged   bool
+	OriginalPort  int
 	ListenURL     string
 	TallyURL      string
 	ConfigPath    string

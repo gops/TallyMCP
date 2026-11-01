@@ -70,6 +70,8 @@ const (
 	NIF_INFO        = 0x00000010
 
 	NIIF_INFO       = 0x00000001
+	NIIF_WARNING    = 0x00000002
+	NIIF_ERROR      = 0x00000003
 
 	MF_STRING       = 0x00000000
 	MF_SEPARATOR    = 0x00000800
@@ -98,12 +100,13 @@ const (
 
 const (
 	idHeader          = 2001
-	idTallyStatus     = 2002
-	idOpenDash        = 2003
-	idOpenConfig      = 2004
-	idToggleAutoStart = 2005
-	idCheckUpdate     = 2006
-	idExit            = 2007
+	idPortStatus      = 2002
+	idTallyStatus     = 2003
+	idOpenDash        = 2004
+	idOpenConfig      = 2005
+	idToggleAutoStart = 2006
+	idCheckUpdate     = 2007
+	idExit            = 2008
 )
 
 type wndClassExW struct {
@@ -333,12 +336,29 @@ func wndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 			headerText, _ := syscall.UTF16PtrFromString(fmt.Sprintf("🟢 Tally MCP Server (%s)", cfg.Version))
 			procAppendMenuW.Call(hMenu, MF_STRING|MF_DISABLED|MF_GRAYED, idHeader, uintptr(unsafe.Pointer(headerText)))
 
-			tallyText, _ := syscall.UTF16PtrFromString(fmt.Sprintf("Tally URL: %s", cfg.TallyURL))
+			var portStatus string
+			if cfg.PortChanged && cfg.OriginalPort > 0 {
+				portStatus = fmt.Sprintf("📡 Port: %d (port %d was busy)", cfg.Port, cfg.OriginalPort)
+			} else if cfg.Port > 0 {
+				portStatus = fmt.Sprintf("📡 Port: %d (Active)", cfg.Port)
+			} else {
+				portStatus = "📡 Port: Active"
+			}
+			portText, _ := syscall.UTF16PtrFromString(portStatus)
+			procAppendMenuW.Call(hMenu, MF_STRING|MF_DISABLED|MF_GRAYED, idPortStatus, uintptr(unsafe.Pointer(portText)))
+
+			tallyText, _ := syscall.UTF16PtrFromString(fmt.Sprintf("🏢 Tally URL: %s", cfg.TallyURL))
 			procAppendMenuW.Call(hMenu, MF_STRING|MF_DISABLED|MF_GRAYED, idTallyStatus, uintptr(unsafe.Pointer(tallyText)))
 
 			procAppendMenuW.Call(hMenu, MF_SEPARATOR, 0, 0)
 
-			dashText, _ := syscall.UTF16PtrFromString("🌐 Open Web Dashboard")
+			var dashMenuTitle string
+			if cfg.Port > 0 {
+				dashMenuTitle = fmt.Sprintf("🌐 Open Web Dashboard (:%d)", cfg.Port)
+			} else {
+				dashMenuTitle = "🌐 Open Web Dashboard"
+			}
+			dashText, _ := syscall.UTF16PtrFromString(dashMenuTitle)
 			procAppendMenuW.Call(hMenu, MF_STRING, idOpenDash, uintptr(unsafe.Pointer(dashText)))
 
 			cfgText, _ := syscall.UTF16PtrFromString("📄 Open config.yaml")
@@ -557,10 +577,21 @@ func Run(ctx context.Context, cfg Config) error {
 	nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_INFO
 	nid.uCallbackMessage = WM_TRAYICON
 	nid.hIcon = hIcon
-	nid.szTip = stringToUTF16Array128(fmt.Sprintf("Tally MCP Server (%s)", cfg.Version))
-	nid.szInfoTitle = stringToUTF16Array64("Tally MCP Server")
-	nid.szInfo = stringToUTF16Array256(fmt.Sprintf("Server is running in system tray.\nDashboard: %s", resolveDashboardURL(cfg.ListenURL)))
-	nid.dwInfoFlags = NIIF_INFO
+	if cfg.Port > 0 {
+		nid.szTip = stringToUTF16Array128(fmt.Sprintf("Tally MCP (%s) :%d", cfg.Version, cfg.Port))
+	} else {
+		nid.szTip = stringToUTF16Array128(fmt.Sprintf("Tally MCP Server (%s)", cfg.Version))
+	}
+
+	if cfg.PortChanged && cfg.OriginalPort > 0 {
+		nid.szInfoTitle = stringToUTF16Array64("Tally MCP Server (Port Switched)")
+		nid.szInfo = stringToUTF16Array256(fmt.Sprintf("Port %d was busy! Running on port %d.\nDashboard: %s", cfg.OriginalPort, cfg.Port, resolveDashboardURL(cfg.ListenURL)))
+		nid.dwInfoFlags = NIIF_WARNING
+	} else {
+		nid.szInfoTitle = stringToUTF16Array64("Tally MCP Server")
+		nid.szInfo = stringToUTF16Array256(fmt.Sprintf("Server running on port %d.\nDashboard: %s", cfg.Port, resolveDashboardURL(cfg.ListenURL)))
+		nid.dwInfoFlags = NIIF_INFO
+	}
 
 	currentNID = nid
 	procShell_NotifyIconW.Call(NIM_ADD, uintptr(unsafe.Pointer(&nid)))

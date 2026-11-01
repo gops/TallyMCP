@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -178,9 +179,29 @@ func main() {
 		_ = config.WriteDefaultConfigFile("config.yaml")
 	}
 
-	// Step 3: Print Banner (unless running in stdio mode)
+	// Step 3: Bind network listener for MCP Server (with automatic port conflict resolution)
+	var (
+		listener     net.Listener
+		activePort   int
+		portChanged  bool
+		originalPort int
+	)
+
 	if cfg.Server.Transport != "stdio" {
-		printBanner(cfg, configPath)
+		originalPort = 8080
+		if _, portStr, err := net.SplitHostPort(cfg.Server.ListenAddress); err == nil {
+			if p, err := strconv.Atoi(portStr); err == nil {
+				originalPort = p
+			}
+		}
+
+		var err error
+		listener, _, activePort, portChanged, err = mcp.BindAvailableListener(cfg.Server.ListenAddress)
+		if err != nil {
+			log.Fatalf("[FATAL] Failed to bind network port: %v", err)
+		}
+
+		printBanner(cfg, configPath, activePort, portChanged, originalPort)
 	}
 
 	// Step 4: Check for updates on startup if enabled
@@ -231,8 +252,14 @@ func main() {
 
 	serverErrChan := make(chan error, 1)
 	go func() {
-		if err := srv.Run(ctx); err != nil {
-			serverErrChan <- err
+		if listener != nil {
+			if err := srv.RunSSEWithListener(ctx, listener); err != nil {
+				serverErrChan <- err
+			}
+		} else {
+			if err := srv.Run(ctx); err != nil {
+				serverErrChan <- err
+			}
 		}
 	}()
 
@@ -253,20 +280,21 @@ func main() {
 		updateMu       sync.Mutex
 	)
 
-	dashURL := "http://" + cfg.Server.ListenAddress
-	if host, port, err := net.SplitHostPort(cfg.Server.ListenAddress); err == nil {
-		if host == "0.0.0.0" || host == "" {
-			host = "localhost"
-		}
-		dashURL = fmt.Sprintf("http://%s:%s", host, port)
+	dashPort := activePort
+	if dashPort == 0 {
+		dashPort = 8080
 	}
+	dashURL := fmt.Sprintf("http://localhost:%d", dashPort)
 
 	trayCfg := tray.Config{
-		Version:    Version,
-		ListenURL:  dashURL,
-		TallyURL:   cfg.Tally.URL,
-		ConfigPath: configPath,
-		GitHubRepo: cfg.Updater.GitHubRepo,
+		Version:      Version,
+		Port:         activePort,
+		PortChanged:  portChanged,
+		OriginalPort: originalPort,
+		ListenURL:    dashURL,
+		TallyURL:     cfg.Tally.URL,
+		ConfigPath:   configPath,
+		GitHubRepo:   cfg.Updater.GitHubRepo,
 		OnCheckUpdate: func(c context.Context) (bool, string, string, error) {
 			info, err := updater.CheckForUpdate(c, Version, cfg.Updater.GitHubRepo)
 			if err != nil {
@@ -312,7 +340,7 @@ func main() {
 	log.Println("[INFO] Server exited cleanly.")
 }
 
-func printBanner(cfg *config.Config, configPath string) {
+func printBanner(cfg *config.Config, configPath string, activePort int, portChanged bool, originalPort int) {
 	fmt.Println(`
   ╔═══════════════════════════════════════════════════════════════════╗
   ║                      TALLY ERP MCP SERVER                         ║
@@ -322,7 +350,11 @@ func printBanner(cfg *config.Config, configPath string) {
 	fmt.Printf("  • Version:        %s\n", Version)
 	fmt.Printf("  • Tally URL:      %s\n", cfg.Tally.URL)
 	fmt.Printf("  • MCP Transport:  %s\n", cfg.Server.Transport)
-	fmt.Printf("  • Listen Address: %s\n", cfg.Server.ListenAddress)
+	if portChanged {
+		fmt.Printf("  • Listen Address: port %d (auto-switched; port %d was busy)\n", activePort, originalPort)
+	} else {
+		fmt.Printf("  • Listen Address: %s\n", cfg.Server.ListenAddress)
+	}
 	if configPath != "" {
 		fmt.Printf("  • Config File:    %s\n", configPath)
 	} else {
@@ -339,8 +371,8 @@ func printBanner(cfg *config.Config, configPath string) {
 	// Display local network IP addresses
 	localIPs := getLocalIPs()
 	if len(localIPs) > 0 {
-		_, port, err := net.SplitHostPort(cfg.Server.ListenAddress)
-		if err != nil {
+		port := strconv.Itoa(activePort)
+		if activePort == 0 {
 			port = "8080"
 		}
 		fmt.Println("\n  LAN MCP SSE Endpoints:")
