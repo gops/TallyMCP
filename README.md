@@ -4,6 +4,9 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/owner/tally-mcp)](https://goreportcard.com/report/github.com/owner/tally-mcp)
 [![Release](https://img.shields.io/github/v/release/owner/tally-mcp)](https://github.com/owner/tally-mcp/releases)
 
+> [!WARNING]
+> **Disclaimer**: This is AI-generated code and can have errors or mistakes. Use at your own risk. Always verify and test thoroughly before running against production Tally accounting data.
+
 A high-performance, **self-updating Windows executable** written in Go that acts as a bridge between **Tally ERP 9 / TallyPrime** and AI assistants (Claude, Cursor, custom agents) across your **Local Network (LAN)** using the standard **Model Context Protocol (MCP)**.
 
 ```
@@ -245,6 +248,12 @@ make build
 make build-windows
 # Binary will be generated at bin/tally-mcp.exe
 ```
+
+---
+
+## Disclaimer
+
+This is AI-generated code and can have errors or mistakes. Use at your own risk. It is provided "as is" without warranty of any kind. Always test queries, actions, and reports against a test or backup Tally environment before deploying or using it with production financial books.
 
 ---
 
