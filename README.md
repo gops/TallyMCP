@@ -23,7 +23,8 @@ A high-performance, **self-updating Windows executable** written in Go that acts
 
 ## Key Features
 
-- ⚡ **Standalone Windows System Tray App**: Zero external runtime dependencies. Runs silently in the **Windows System Tray (Notification Area)** without an intrusive command prompt / cmd window. Right-click the tray icon to view active port status, open the web dashboard, edit `config.yaml`, toggle **Start with Windows**, check for updates, or exit. (Use `--no-tray` for headless/server mode).
+- ⚡ **Standalone Windows System Tray App**: Zero external runtime dependencies. Runs silently in the **Windows System Tray (Notification Area)** without an intrusive command prompt / cmd window. Right-click the tray icon to view active port status, open the web dashboard, edit `config.yaml`, toggle **Allow through Windows Firewall**, toggle **Start with Windows**, check for updates, or exit. (Use `--no-tray` for headless/server mode).
+- 🛡️ **One-Click Windows Firewall Configuration**: Easily allow inbound connections (TCP port range `8080-8090`) directly from the system tray menu (`🛡️ Allow through Windows Firewall` with a dynamic checkmark) or via CLI (`--firewall allow`). Automatically prompts for UAC elevation if needed, eliminating network friction for LAN users and remote AI agents.
 - 🔌 **Automatic Port Conflict Resolution**: If port `8080` is occupied by another app or running service, Tally MCP automatically discovers and binds the next available port (e.g. `8081`), displays the active port in the system tray menu and tooltips, and routes dashboard clicks accordingly.
 - 🚀 **Start with Windows**: Seamlessly runs on system startup with a single click from the System Tray menu (shows a checkmark when enabled) or via CLI (`--startup enable`). Stored cleanly in standard user registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`), requiring no admin elevation.
 - 🔄 **Automated Self-Updater**:
@@ -171,6 +172,12 @@ The binary includes a robust updater designed specifically for Windows executabl
      tally-mcp.exe --startup enable    # Start automatically on Windows boot
      tally-mcp.exe --startup disable   # Disable automatic startup
      tally-mcp.exe --startup status    # Check startup status
+     ```
+   - Manage Windows Firewall rule for LAN connections:
+     ```cmd
+     tally-mcp.exe --firewall allow    # Allow inbound TCP port range (8080-8090)
+     tally-mcp.exe --firewall remove   # Remove TallyMCP Windows Firewall rule
+     tally-mcp.exe --firewall status   # Check if firewall rule is active
      ```
 
 ---

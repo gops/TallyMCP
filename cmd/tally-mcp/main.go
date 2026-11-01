@@ -48,6 +48,7 @@ func main() {
 	checkUpdateFlag := flag.Bool("check-update", false, "Check for newer GitHub releases and exit")
 	updateFlag := flag.Bool("update", false, "Download and apply the latest update, then exit")
 	startupFlag := flag.String("startup", "", "Configure startup with Windows: enable, disable, or status")
+	firewallFlag := flag.String("firewall", "", "Configure Windows Firewall rule: allow, remove, or status")
 	initConfigFlag := flag.Bool("init-config", false, "Generate a default config.yaml in the current directory and exit")
 
 	flag.Parse()
@@ -89,6 +90,41 @@ func main() {
 			}
 		default:
 			log.Fatalf("Invalid -startup value '%s': choose enable, disable, or status", *startupFlag)
+		}
+		return
+	}
+
+	// Handle firewall configuration
+	if *firewallFlag != "" {
+		switch strings.ToLower(*firewallFlag) {
+		case "allow", "enable", "add":
+			targetPort := 8080
+			if *listenFlag != "" {
+				if _, pStr, err := net.SplitHostPort(*listenFlag); err == nil {
+					if p, err := strconv.Atoi(pStr); err == nil && p > 0 {
+						targetPort = p
+					}
+				}
+			}
+			fmt.Printf("Configuring Windows Firewall rule for Tally MCP (TCP port range %d-%d)...\n", targetPort, targetPort+10)
+			if err := tray.ConfigureFirewallRule(0, targetPort); err != nil {
+				log.Fatalf("[ERROR] Failed to configure Windows Firewall: %v", err)
+			}
+			fmt.Println("Successfully configured: Inbound TCP connections are allowed through Windows Firewall.")
+		case "remove", "disable", "delete":
+			fmt.Println("Removing Windows Firewall rule for Tally MCP...")
+			if err := tray.RemoveFirewallRule(0); err != nil {
+				log.Fatalf("[ERROR] Failed to remove Windows Firewall rule: %v", err)
+			}
+			fmt.Println("Successfully removed: Tally MCP Windows Firewall rule has been deleted.")
+		case "status", "check":
+			if tray.IsFirewallRuleConfigured() {
+				fmt.Println("Windows Firewall: Allowed (TallyMCP inbound rule is active)")
+			} else {
+				fmt.Println("Windows Firewall: Not Configured (Run with --firewall allow or right-click system tray)")
+			}
+		default:
+			log.Fatalf("Invalid -firewall value '%s': choose allow, remove, or status", *firewallFlag)
 		}
 		return
 	}
@@ -365,6 +401,11 @@ func printBanner(cfg *config.Config, configPath string, activePort int, portChan
 		fmt.Printf("  • Auth Security:  Enabled (API key required)\n")
 	} else {
 		fmt.Printf("  • Auth Security:  Disabled (Open LAN access)\n")
+	}
+	if tray.IsFirewallRuleConfigured() {
+		fmt.Printf("  • Win Firewall:   Allowed (Inbound TCP rule active)\n")
+	} else {
+		fmt.Printf("  • Win Firewall:   Not configured (Use tray menu -> 'Allow through Windows Firewall' or run --firewall allow)\n")
 	}
 	fmt.Printf("  • GitHub Repo:    %s\n", cfg.Updater.GitHubRepo)
 

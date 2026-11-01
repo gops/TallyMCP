@@ -104,9 +104,10 @@ const (
 	idTallyStatus     = 2003
 	idOpenDash        = 2004
 	idOpenConfig      = 2005
-	idToggleAutoStart = 2006
-	idCheckUpdate     = 2007
-	idExit            = 2008
+	idToggleFirewall  = 2006
+	idToggleAutoStart = 2007
+	idCheckUpdate     = 2008
+	idExit            = 2009
 )
 
 type wndClassExW struct {
@@ -366,6 +367,15 @@ func wndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 
 			procAppendMenuW.Call(hMenu, MF_SEPARATOR, 0, 0)
 
+			// Allow through Windows Firewall
+			fwFlags := uint32(MF_STRING)
+			if IsFirewallRuleConfigured() {
+				fwFlags |= MF_CHECKED
+			}
+			fwText, _ := syscall.UTF16PtrFromString("🛡️ Allow through Windows Firewall")
+			procAppendMenuW.Call(hMenu, uintptr(fwFlags), idToggleFirewall, uintptr(unsafe.Pointer(fwText)))
+
+			// Start with Windows
 			autoStartFlags := uint32(MF_STRING)
 			if IsAutoStartEnabled() {
 				autoStartFlags |= MF_CHECKED
@@ -405,6 +415,39 @@ func wndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 			} else {
 				openFile("config.yaml")
 			}
+
+		case idToggleFirewall:
+			go func() {
+				titlePtr, _ := syscall.UTF16PtrFromString("Windows Firewall Configuration")
+				if IsFirewallRuleConfigured() {
+					msgPtr, _ := syscall.UTF16PtrFromString("Tally MCP is currently allowed through Windows Firewall.\n\nWould you like to remove the inbound firewall rule?")
+					res, _, _ := procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(msgPtr)), uintptr(unsafe.Pointer(titlePtr)), MB_YESNO|MB_ICONQUESTION)
+					if res == IDYES {
+						if err := RemoveFirewallRule(hwnd); err != nil {
+							failPtr, _ := syscall.UTF16PtrFromString(fmt.Sprintf("Failed to remove firewall rule: %v", err))
+							procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(failPtr)), uintptr(unsafe.Pointer(titlePtr)), MB_OK|MB_ICONERROR)
+						} else {
+							showTrayBalloon("Tally MCP Firewall", "Inbound firewall rule for Tally MCP was removed.")
+						}
+					}
+				} else {
+					targetPort := cfg.Port
+					if targetPort <= 0 {
+						targetPort = 8080
+					}
+					prompt := fmt.Sprintf("Allow Tally MCP through Windows Firewall for TCP port range %d-%d?\n\nThis will open a Windows prompt to allow inbound connections so other devices on your LAN (or AI clients) can connect.", targetPort, targetPort+10)
+					msgPtr, _ := syscall.UTF16PtrFromString(prompt)
+					res, _, _ := procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(msgPtr)), uintptr(unsafe.Pointer(titlePtr)), MB_YESNO|MB_ICONQUESTION)
+					if res == IDYES {
+						if err := ConfigureFirewallRule(hwnd, targetPort); err != nil {
+							failPtr, _ := syscall.UTF16PtrFromString(fmt.Sprintf("Failed to configure firewall: %v", err))
+							procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(failPtr)), uintptr(unsafe.Pointer(titlePtr)), MB_OK|MB_ICONERROR)
+						} else {
+							showTrayBalloon("Tally MCP Firewall", fmt.Sprintf("Windows Firewall configured! LAN devices can now connect to Tally MCP on port %d.", targetPort))
+						}
+					}
+				}
+			}()
 
 		case idToggleAutoStart:
 			enabled := IsAutoStartEnabled()
