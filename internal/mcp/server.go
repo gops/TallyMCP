@@ -89,10 +89,12 @@ func (s *Server) registerTools() {
 	// 5. tally_list_vouchers
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_list_vouchers",
-			mcp.WithDescription("List accounting and inventory vouchers (Sales, Purchase, Payment, Receipt, Journal)."),
+			mcp.WithDescription("List accounting and inventory vouchers (Sales, Purchase, Payment, Receipt, Journal) with automatic pagination to protect context window."),
 			mcp.WithString("voucher_type", mcp.Description("Optional voucher type (e.g. 'Sales', 'Purchase', 'Payment', 'Receipt', 'Journal')")),
 			mcp.WithString("from_date", mcp.Description("Start date in YYYYMMDD format (e.g. '20240401')")),
 			mcp.WithString("to_date", mcp.Description("End date in YYYYMMDD format (e.g. '20250331')")),
+			mcp.WithNumber("limit", mcp.Description("Number of vouchers to return per page (default: 50, max: 250)")),
+			mcp.WithNumber("offset", mcp.Description("Zero-based index of the first voucher to return (default: 0)")),
 		),
 		s.handlers.HandleListVouchers,
 	)

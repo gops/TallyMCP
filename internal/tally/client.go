@@ -293,6 +293,54 @@ func (c *Client) ListVouchers(ctx context.Context, voucherType, fromDate, toDate
 	return result, nil
 }
 
+// ListVouchersPaginated fetches vouchers and returns a paginated slice with total counts and has_more indicator.
+func (c *Client) ListVouchersPaginated(ctx context.Context, voucherType, fromDate, toDate string, limit, offset int) (*PaginatedVouchers, error) {
+	vouchers, err := c.ListVouchers(ctx, voucherType, fromDate, toDate)
+	if err != nil {
+		return nil, err
+	}
+
+	total := len(vouchers)
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 250 {
+		limit = 250
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var paged []VoucherItem
+	var nextOffset *int
+	var hasMore bool
+
+	if offset < total {
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		paged = vouchers[offset:end]
+		if end < total {
+			hasMore = true
+			nextVal := end
+			nextOffset = &nextVal
+		}
+	} else {
+		paged = []VoucherItem{}
+	}
+
+	return &PaginatedVouchers{
+		Total:      total,
+		Limit:      limit,
+		Offset:     offset,
+		Count:      len(paged),
+		HasMore:    hasMore,
+		NextOffset: nextOffset,
+		Vouchers:   paged,
+	}, nil
+}
+
 // GetTrialBalance retrieves the Trial Balance report formatted as structured JSON.
 func (c *Client) GetTrialBalance(ctx context.Context, fromDate, toDate string) (map[string]any, error) {
 	xmlQuery, err := BuildTrialBalanceXML(c.defaultCompany, fromDate, toDate)

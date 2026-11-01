@@ -199,10 +199,47 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 			}
 		}
 
-		for _, expected := range []string{"tally_status", "tally_list_companies", "tally_list_ledgers"} {
+		for _, expected := range []string{"tally_status", "tally_list_companies", "tally_list_ledgers", "tally_list_vouchers"} {
 			if !toolNames[expected] {
 				t.Errorf("expected tool %s to be registered", expected)
 			}
+		}
+	})
+
+	// 5. Test Streamable HTTP tools/call tally_list_vouchers pagination support
+	t.Run("POST /mcp tools/call tally_list_vouchers", func(t *testing.T) {
+		callPayload := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      3,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name": "tally_list_vouchers",
+				"arguments": map[string]any{
+					"limit":  25,
+					"offset": 0,
+				},
+			},
+		}
+		data, _ := json.Marshal(callPayload)
+
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 OK, got %d", resp.StatusCode)
 		}
 	})
 

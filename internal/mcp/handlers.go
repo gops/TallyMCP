@@ -114,18 +114,20 @@ func (h *ToolHandlers) HandleListStockItems(ctx context.Context, req mcp.CallToo
 	return mcp.NewToolResultText(jsonStr), nil
 }
 
-// HandleListVouchers queries accounting and inventory vouchers.
+// HandleListVouchers queries accounting and inventory vouchers with pagination.
 func (h *ToolHandlers) HandleListVouchers(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	voucherType := req.GetString("voucher_type", "")
 	fromDate := req.GetString("from_date", "")
 	toDate := req.GetString("to_date", "")
+	limit := req.GetInt("limit", 50)
+	offset := req.GetInt("offset", 0)
 
-	vouchers, err := h.tallyClient.ListVouchers(ctx, voucherType, fromDate, toDate)
+	paginated, err := h.tallyClient.ListVouchersPaginated(ctx, voucherType, fromDate, toDate, limit, offset)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to list vouchers: %v", err)), nil
 	}
 
-	jsonStr, err := tally.PrettyJSON(vouchers)
+	jsonStr, err := tally.PrettyJSON(paginated)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}

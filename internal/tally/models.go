@@ -100,6 +100,17 @@ type VoucherItem struct {
 	LedgerEntries   []LedgerEntryRecord `xml:"ALLLEDGERENTRIES.LIST" json:"ledger_entries,omitempty"`
 }
 
+// PaginatedVouchers represents a page of voucher results with metadata for LLM safety.
+type PaginatedVouchers struct {
+	Total      int           `json:"total"`
+	Limit      int           `json:"limit"`
+	Offset     int           `json:"offset"`
+	Count      int           `json:"count"`
+	HasMore    bool          `json:"has_more"`
+	NextOffset *int          `json:"next_offset,omitempty"`
+	Vouchers   []VoucherItem `json:"vouchers"`
+}
+
 // LedgerEntryRecord represents a line entry in a voucher.
 type LedgerEntryRecord struct {
 	LedgerName string  `xml:"LEDGERNAME" json:"ledger_name"`

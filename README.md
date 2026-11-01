@@ -42,7 +42,7 @@ A high-performance, **self-updating Windows executable** written in Go that acts
   - Check active connection and company details (`tally_status`, `tally_list_companies`).
   - Account ledgers with opening & closing balances and contact info (`tally_list_ledgers`, `tally_get_ledger`).
   - Inventory & Stock summary (`tally_get_stock_summary`).
-  - Vouchers & transactions with date filters (`tally_list_vouchers`).
+  - Vouchers & transactions with date filters and automatic LLM pagination (`tally_list_vouchers`).
   - Real-time Trial Balance report (`tally_get_trial_balance`).
   - Advanced raw XML / TDL query executor (`tally_execute_xml`).
   - Ledger creation (`tally_create_ledger`).
@@ -166,7 +166,7 @@ If you enabled authentication in `config.yaml`:
 | `tally_list_companies` | List all open / loaded companies in Tally | *none* |
 | `tally_list_ledgers` | Fetch ledgers with balances, contact details, and GSTIN | `group` (e.g. `"Sundry Debtors"`) |
 | `tally_get_ledger` | Fetch complete ledger profile and address | `name` *(required)* |
-| `tally_list_vouchers` | Search vouchers by date range and type | `voucher_type`, `from_date`, `to_date` |
+| `tally_list_vouchers` | Search vouchers with pagination and context window safety (`has_more`, `next_offset`) | `voucher_type`, `from_date`, `to_date`, `limit` (default: 50, max: 250), `offset` (default: 0) |
 | `tally_get_stock_summary`| Inspect inventory quantities, units, and valuations | `group` (optional filter) |
 | `tally_get_trial_balance` | Fetch formatted Trial Balance statement | `from_date`, `to_date` |
 | `tally_execute_xml` | Execute raw TDL or XML envelopes against Tally | `xml_content` *(required)* |
