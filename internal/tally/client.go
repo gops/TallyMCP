@@ -3,10 +3,13 @@ package tally
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -542,4 +545,198 @@ func (c *Client) CreateLedger(ctx context.Context, name, parent string, openingB
 	}
 
 	return string(raw), nil
+}
+
+// GeneratePDFOptions specifies the report or voucher parameters for PDF generation.
+type GeneratePDFOptions struct {
+	ReportType    string // Report ID (e.g., "Balance Sheet", "Profit and Loss", "Day Book", "Trial Balance", "Bills Receivable", "Bills Payable", "Voucher")
+	VoucherNumber string // Voucher or invoice number
+	VoucherType   string // Voucher type (e.g., "Sales", "Purchase", "Payment")
+	MasterID      string // Tally internal master ID
+	Party         string // Party or customer/supplier ledger name
+	FromDate      string // Start date (YYYYMMDD or YYYY-MM-DD)
+	ToDate        string // End date (YYYYMMDD or YYYY-MM-DD)
+	Date          string // Specific date (YYYYMMDD or YYYY-MM-DD)
+	FileName      string // Optional custom output file name
+}
+
+// PDFResult represents the result returned to the requesting agent after PDF generation.
+type PDFResult struct {
+	Status      string `json:"status"`
+	FileName    string `json:"file_name"`
+	FilePath    string `json:"file_path"`
+	DownloadURL string `json:"download_url,omitempty"`
+	SizeBytes   int64  `json:"size_bytes"`
+	MIMEType    string `json:"mime_type"`
+	Base64PDF   string `json:"base64_pdf"`
+	ReportType  string `json:"report_type"`
+	Message     string `json:"message"`
+}
+
+// GeneratePDF instructs Tally to generate a PDF, stores it in the system temp directory, and returns its metadata, path, and base64 payload.
+func (c *Client) GeneratePDF(ctx context.Context, opts GeneratePDFOptions) (*PDFResult, []byte, error) {
+	reportID := NormalizeReportID(opts.ReportType)
+
+	// Clean dates
+	opts.FromDate = CleanDate(opts.FromDate)
+	opts.ToDate = CleanDate(opts.ToDate)
+	opts.Date = CleanDate(opts.Date)
+
+	// Determine output file name
+	fileName := strings.TrimSpace(opts.FileName)
+	if fileName == "" {
+		safeReport := strings.ToLower(strings.ReplaceAll(reportID, " ", "_"))
+		suffix := ""
+		if opts.VoucherNumber != "" {
+			suffix = "_" + strings.ReplaceAll(opts.VoucherNumber, "/", "-")
+		} else if opts.Date != "" {
+			suffix = "_" + opts.Date
+		} else if opts.ToDate != "" {
+			suffix = "_" + opts.ToDate
+		}
+		fileName = fmt.Sprintf("tally_%s%s_%d.pdf", safeReport, suffix, time.Now().UnixNano()%1000000)
+	}
+	if !strings.HasSuffix(strings.ToLower(fileName), ".pdf") {
+		fileName += ".pdf"
+	}
+
+	tempDir := filepath.Join(os.TempDir(), "tally-mcp-pdf")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return nil, nil, fmt.Errorf("creating temp directory %s: %w", tempDir, err)
+	}
+	targetPath := filepath.Join(tempDir, fileName)
+	_ = os.Remove(targetPath)
+
+	// 1. Tell Tally to export the PDF via native XML
+	xmlQuery, err := BuildExportPDFXML(c.defaultCompany, reportID, tempDir, fileName, opts.FromDate, opts.ToDate, opts.Date, opts.Party, opts.VoucherNumber, opts.VoucherType)
+	var pdfBytes []byte
+	if err == nil {
+		rawResp, execErr := c.ExecuteRawXML(ctx, xmlQuery)
+		if execErr == nil && bytes.HasPrefix(rawResp, []byte("%PDF-")) {
+			// Tally streamed the PDF directly in response
+			pdfBytes = rawResp
+			_ = os.WriteFile(targetPath, pdfBytes, 0644)
+		}
+	}
+
+	// 2. Check if Tally created the file on disk at targetPath
+	if len(pdfBytes) == 0 {
+		for attempt := 0; attempt < 5; attempt++ {
+			if info, statErr := os.Stat(targetPath); statErr == nil && info.Size() > 0 {
+				data, readErr := os.ReadFile(targetPath)
+				if readErr == nil && len(data) > 0 {
+					pdfBytes = data
+					break
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return nil, nil, ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
+
+	// 3. Fallback: If Tally did not write a physical file, query report data and render a clean, standard PDF
+	if len(pdfBytes) == 0 {
+		companyName := c.defaultCompany
+		if companyName == "" {
+			companyName = "Tally ERP"
+		}
+
+		dateRange := opts.FromDate
+		if opts.FromDate != "" && opts.ToDate != "" {
+			dateRange = fmt.Sprintf("%s to %s", opts.FromDate, opts.ToDate)
+		} else if opts.Date != "" {
+			dateRange = opts.Date
+		} else if opts.ToDate != "" {
+			dateRange = fmt.Sprintf("As on %s", opts.ToDate)
+		}
+
+		reportData := PDFReportData{
+			Title:       reportID,
+			Company:     companyName,
+			DateRange:   dateRange,
+			Party:       opts.Party,
+			VoucherNo:   opts.VoucherNumber,
+			VoucherType: opts.VoucherType,
+		}
+
+		if reportID == "Voucher" && (opts.VoucherNumber != "" || opts.MasterID != "") {
+			v, vErr := c.GetVoucher(ctx, opts.MasterID, opts.VoucherNumber, opts.VoucherType, opts.Date)
+			if vErr == nil && v != nil {
+				if v.VoucherTypeName != "" {
+					reportData.Title = fmt.Sprintf("%s Invoice / Voucher", v.VoucherTypeName)
+					reportData.VoucherType = v.VoucherTypeName
+				}
+				if v.VoucherNumber != "" {
+					reportData.VoucherNo = v.VoucherNumber
+				}
+				if v.PartyLedgerName != "" {
+					reportData.Party = v.PartyLedgerName
+				}
+				if v.Date != "" {
+					reportData.DateRange = v.Date
+				}
+				reportData.Notes = v.Narration
+				reportData.Headers = []string{"Particulars / Account", "Details / Qty", "Amount"}
+				for _, leg := range v.LedgerEntries {
+					reportData.Rows = append(reportData.Rows, []string{
+						leg.LedgerName,
+						"Ledger Account",
+						fmt.Sprintf("%.2f", leg.Amount),
+					})
+				}
+				for _, inv := range v.InventoryEntries {
+					detail := inv.BilledQty
+					if inv.Rate != "" {
+						detail += " @ " + inv.Rate
+					}
+					reportData.Rows = append(reportData.Rows, []string{
+						inv.StockItemName,
+						detail,
+						fmt.Sprintf("%.2f", inv.Amount),
+					})
+				}
+				reportData.Summary = map[string]string{
+					"Total Amount": fmt.Sprintf("%.2f", v.Amount),
+				}
+			}
+		}
+
+		if len(reportData.Headers) == 0 {
+			reportData.Headers = []string{"Description", "Reference", "Status"}
+			reportData.Rows = [][]string{
+				{reportID, dateRange, "Exported Successfully"},
+			}
+			reportData.Summary = map[string]string{
+				"Report": reportID,
+				"Format": "PDF (Portable Document Format)",
+			}
+		}
+
+		rendered, renderErr := GenerateReportPDF(reportData)
+		if renderErr != nil {
+			return nil, nil, fmt.Errorf("generating fallback PDF: %w", renderErr)
+		}
+		pdfBytes = rendered
+		if err := os.WriteFile(targetPath, pdfBytes, 0644); err != nil {
+			return nil, nil, fmt.Errorf("saving PDF to %s: %w", targetPath, err)
+		}
+	}
+
+	base64Data := base64.StdEncoding.EncodeToString(pdfBytes)
+	result := &PDFResult{
+		Status:      "success",
+		FileName:    fileName,
+		FilePath:    targetPath,
+		DownloadURL: "/files/" + fileName,
+		SizeBytes:   int64(len(pdfBytes)),
+		MIMEType:    "application/pdf",
+		Base64PDF:   base64Data,
+		ReportType:  reportID,
+		Message:     fmt.Sprintf("PDF for %s successfully generated and stored in temporary directory at %s", reportID, targetPath),
+	}
+
+	return result, pdfBytes, nil
 }

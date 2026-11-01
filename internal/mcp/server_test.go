@@ -210,6 +210,7 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 			"tally_get_outstanding_receivables",
 			"tally_get_outstanding_payables",
 			"tally_get_daybook",
+			"tally_generate_pdf",
 		} {
 			if !toolNames[expected] {
 				t.Errorf("expected tool %s to be registered", expected)
@@ -346,6 +347,77 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 			if resp.StatusCode != http.StatusOK {
 				t.Errorf("%s: expected 200 OK, got %d", toolName, resp.StatusCode)
 			}
+		}
+	})
+
+	// 8. Test Streamable HTTP tools/call tally_generate_pdf and file download endpoint
+	t.Run("POST /mcp tools/call tally_generate_pdf and GET /files/", func(t *testing.T) {
+		callPayload := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      201,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name": "tally_generate_pdf",
+				"arguments": map[string]any{
+					"report_type": "Balance Sheet",
+					"from_date":   "20240401",
+					"to_date":     "20250331",
+					"filename":    "test_mcp_bs.pdf",
+				},
+			},
+		}
+		data, _ := json.Marshal(callPayload)
+
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp tally_generate_pdf failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+		}
+
+		var rpcResp map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+			t.Fatalf("failed to parse JSON-RPC response: %v", err)
+		}
+
+		result, ok := rpcResp["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected 'result' in response, got %v", rpcResp)
+		}
+
+		content, ok := result["content"].([]any)
+		if !ok || len(content) == 0 {
+			t.Fatalf("expected content in result, got: %v", result)
+		}
+
+		// Verify file download via /files/test_mcp_bs.pdf
+		fileResp, err := http.Get(baseURL + "/files/test_mcp_bs.pdf")
+		if err != nil {
+			t.Fatalf("failed to GET /files/test_mcp_bs.pdf: %v", err)
+		}
+		defer fileResp.Body.Close()
+
+		if fileResp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 OK from /files/test_mcp_bs.pdf, got %d", fileResp.StatusCode)
+		}
+
+		fileHeader := make([]byte, 10)
+		_, _ = fileResp.Body.Read(fileHeader)
+		if !bytes.HasPrefix(fileHeader, []byte("%PDF-1.4")) {
+			t.Errorf("expected PDF header from /files/ endpoint, got %q", string(fileHeader))
 		}
 	})
 

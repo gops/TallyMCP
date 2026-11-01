@@ -15,9 +15,10 @@ import (
 
 // ToolHandlers encapsulates dependencies for handling MCP tool calls.
 type ToolHandlers struct {
-	tallyClient    *tally.Client
-	appVersion     string
-	githubRepo     string
+	tallyClient *tally.Client
+	appVersion  string
+	githubRepo  string
+	baseURL     string
 }
 
 // NewToolHandlers creates a new ToolHandlers instance.
@@ -27,6 +28,11 @@ func NewToolHandlers(tallyClient *tally.Client, appVersion, githubRepo string) *
 		appVersion:  appVersion,
 		githubRepo:  githubRepo,
 	}
+}
+
+// SetBaseURL configures the base URL for generating absolute download links.
+func (h *ToolHandlers) SetBaseURL(baseURL string) {
+	h.baseURL = baseURL
 }
 
 // HandleTallyStatus checks connectivity to Tally ERP.
@@ -296,6 +302,93 @@ func (h *ToolHandlers) HandleGetDayBook(ctx context.Context, req mcp.CallToolReq
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return mcp.NewToolResultText(jsonStr), nil
+}
+
+// HandleGeneratePDF generates a PDF for a specified report or voucher, stores it in temp directory, and sends it to the requesting agent.
+func (h *ToolHandlers) HandleGeneratePDF(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reportType := req.GetString("report_type", "")
+	if reportType == "" {
+		reportType = req.GetString("report", "")
+	}
+	if reportType == "" {
+		reportType = req.GetString("type", "Balance Sheet")
+	}
+
+	voucherNo := req.GetString("voucher_no", "")
+	if voucherNo == "" {
+		voucherNo = req.GetString("voucher_number", "")
+	}
+	if voucherNo == "" {
+		voucherNo = req.GetString("invoice_no", "")
+	}
+	if voucherNo == "" {
+		if num := req.GetInt("voucher_no", 0); num > 0 {
+			voucherNo = strconv.Itoa(num)
+		} else if num := req.GetInt("voucher_number", 0); num > 0 {
+			voucherNo = strconv.Itoa(num)
+		}
+	}
+
+	masterID := req.GetString("master_id", "")
+	if masterID == "" {
+		if id := req.GetInt("master_id", 0); id > 0 {
+			masterID = strconv.Itoa(id)
+		}
+	}
+
+	voucherType := req.GetString("voucher_type", "")
+	party := req.GetString("party", "")
+	if party == "" {
+		party = req.GetString("party_name", "")
+	}
+	if party == "" {
+		party = req.GetString("ledger_name", "")
+	}
+
+	fromDate := req.GetString("from_date", "")
+	toDate := req.GetString("to_date", "")
+	date := req.GetString("date", "")
+	if date == "" {
+		date = req.GetString("for_date", "")
+	}
+
+	fileName := req.GetString("filename", "")
+	if fileName == "" {
+		fileName = req.GetString("file_name", "")
+	}
+
+	opts := tally.GeneratePDFOptions{
+		ReportType:    reportType,
+		VoucherNumber: voucherNo,
+		VoucherType:   voucherType,
+		MasterID:      masterID,
+		Party:         party,
+		FromDate:      fromDate,
+		ToDate:        toDate,
+		Date:          date,
+		FileName:      fileName,
+	}
+
+	result, _, err := h.tallyClient.GeneratePDF(ctx, opts)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to generate PDF: %v", err)), nil
+	}
+
+	if h.baseURL != "" {
+		result.DownloadURL = strings.TrimRight(h.baseURL, "/") + result.DownloadURL
+	}
+
+	jsonStr, err := tally.PrettyJSON(result)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Return tool result with embedded binary resource as well as structured JSON text
+	return mcp.NewToolResultResource(jsonStr, mcp.BlobResourceContents{
+		URI:      "file://" + result.FilePath,
+		MIMEType: "application/pdf",
+		Blob:     result.Base64PDF,
+	}), nil
 }
 
 // HandleExecuteXML executes an arbitrary TDL or XML query.

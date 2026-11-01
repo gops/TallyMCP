@@ -1,6 +1,7 @@
 package tally_test
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -530,6 +531,141 @@ func TestFinancialReportsClient(t *testing.T) {
 		}
 		if res == nil || res["ENVELOPE"] == nil {
 			t.Errorf("expected parsed envelope in result")
+		}
+	})
+}
+
+func TestExportPDFQueries(t *testing.T) {
+	t.Run("NormalizeReportID", func(t *testing.T) {
+		if tally.NormalizeReportID("bs") != "Balance Sheet" {
+			t.Errorf("expected Balance Sheet for bs")
+		}
+		if tally.NormalizeReportID("profit & loss") != "Profit and Loss" {
+			t.Errorf("expected Profit and Loss for profit & loss")
+		}
+		if tally.NormalizeReportID("daybook") != "Day Book" {
+			t.Errorf("expected Day Book for daybook")
+		}
+		if tally.NormalizeReportID("invoice") != "Voucher" {
+			t.Errorf("expected Voucher for invoice")
+		}
+	})
+
+	t.Run("BuildExportPDFXML", func(t *testing.T) {
+		xml, err := tally.BuildExportPDFXML(
+			"Acme Corp",
+			"Balance Sheet",
+			"C:\\Temp",
+			"bs.pdf",
+			"2024-04-01",
+			"2025-03-31",
+			"",
+			"",
+			"",
+			"",
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !strings.Contains(xml, "<ID>Balance Sheet</ID>") {
+			t.Errorf("expected Balance Sheet report ID in XML")
+		}
+		if !strings.Contains(xml, "<SVEXPORTFORMAT>$$SysName:PDF</SVEXPORTFORMAT>") {
+			t.Errorf("expected PDF export format")
+		}
+		if !strings.Contains(xml, "<SVEXPORTLOCATION>C:\\Temp</SVEXPORTLOCATION>") {
+			t.Errorf("expected export location")
+		}
+		if !strings.Contains(xml, "<SVPRINTFILENAME>bs.pdf</SVPRINTFILENAME>") {
+			t.Errorf("expected print file name")
+		}
+		if !strings.Contains(xml, "<SVFROMDATE>20240401</SVFROMDATE>") || !strings.Contains(xml, "<SVTODATE>20250331</SVTODATE>") {
+			t.Errorf("expected cleaned date format")
+		}
+	})
+}
+
+func TestClientGeneratePDF(t *testing.T) {
+	mockResponse := `<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA></DATA></BODY></ENVELOPE>`
+
+	client := tally.NewClient(config.TallyConfig{
+		URL:            "http://mock-tally:9000",
+		TimeoutSeconds: 5,
+	})
+
+	client.SetTransport(roundTripFunc(func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/xml;charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader(mockResponse)),
+		}
+	}))
+
+	ctx := context.Background()
+
+	t.Run("Generate Balance Sheet PDF", func(t *testing.T) {
+		opts := tally.GeneratePDFOptions{
+			ReportType: "Balance Sheet",
+			FromDate:   "20240401",
+			ToDate:     "20250331",
+			FileName:   "test_balance_sheet.pdf",
+		}
+
+		res, pdfBytes, err := client.GeneratePDF(ctx, opts)
+		if err != nil {
+			t.Fatalf("GeneratePDF failed: %v", err)
+		}
+
+		if res.FileName != "test_balance_sheet.pdf" {
+			t.Errorf("expected file_name test_balance_sheet.pdf, got %s", res.FileName)
+		}
+		if res.ReportType != "Balance Sheet" {
+			t.Errorf("expected report_type Balance Sheet, got %s", res.ReportType)
+		}
+		if res.SizeBytes <= 0 {
+			t.Errorf("expected positive size_bytes, got %d", res.SizeBytes)
+		}
+		if len(res.Base64PDF) == 0 {
+			t.Errorf("expected non-empty Base64PDF")
+		}
+		if !bytes.HasPrefix(pdfBytes, []byte("%PDF-1.4")) {
+			t.Errorf("expected PDF header in pdfBytes")
+		}
+	})
+
+	t.Run("Generate Voucher PDF with Direct PDF Stream", func(t *testing.T) {
+		streamedPDF := []byte("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\nxref\n0 2\n0000000000 65535 f \n0000000009 00000 n \ntrailer\n<< /Size 2 /Root 1 0 R >>\nstartxref\n50\n%%EOF\n")
+
+		directClient := tally.NewClient(config.TallyConfig{
+			URL:            "http://mock-tally:9000",
+			TimeoutSeconds: 5,
+		})
+		directClient.SetTransport(roundTripFunc(func(req *http.Request) *http.Response {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/pdf"}},
+				Body:       io.NopCloser(bytes.NewReader(streamedPDF)),
+			}
+		}))
+
+		opts := tally.GeneratePDFOptions{
+			ReportType:    "Voucher",
+			VoucherNumber: "102",
+			VoucherType:   "Sales",
+			FileName:      "invoice_102.pdf",
+		}
+
+		res, pdfBytes, err := directClient.GeneratePDF(ctx, opts)
+		if err != nil {
+			t.Fatalf("direct GeneratePDF failed: %v", err)
+		}
+
+		if res.FileName != "invoice_102.pdf" {
+			t.Errorf("expected invoice_102.pdf, got %s", res.FileName)
+		}
+		if len(pdfBytes) != len(streamedPDF) {
+			t.Errorf("expected %d bytes, got %d", len(streamedPDF), len(pdfBytes))
 		}
 	})
 }

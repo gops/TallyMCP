@@ -7,6 +7,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -181,6 +183,23 @@ func (s *Server) registerTools() {
 		s.handlers.HandleGetDayBook,
 	)
 
+	// tally_generate_pdf
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_generate_pdf",
+			mcp.WithDescription("Instruct Tally ERP / TallyPrime to export any financial report (Balance Sheet, Profit & Loss, Day Book, Trial Balance, Outstandings) or voucher/invoice directly to a PDF file, save it in the system temp directory, and return file path, download URL, and base64 payload to the requesting agent."),
+			mcp.WithString("report_type", mcp.Description("Type of report or document to export (e.g. 'Balance Sheet', 'Profit and Loss', 'Day Book', 'Trial Balance', 'Bills Receivable', 'Bills Payable', 'Voucher', 'Invoice')"), mcp.Required()),
+			mcp.WithString("voucher_no", mcp.Description("Voucher / invoice number if exporting a specific transaction PDF (e.g. '102', 'INV-2024-001')")),
+			mcp.WithString("voucher_type", mcp.Description("Voucher type if exporting a voucher (e.g. 'Sales', 'Purchase', 'Payment', 'Receipt')")),
+			mcp.WithString("master_id", mcp.Description("Optional Tally internal Master ID of the voucher")),
+			mcp.WithString("party", mcp.Description("Optional party / customer / supplier ledger filter")),
+			mcp.WithString("from_date", mcp.Description("Optional start date in YYYYMMDD or YYYY-MM-DD format")),
+			mcp.WithString("to_date", mcp.Description("Optional end date / as-on date in YYYYMMDD or YYYY-MM-DD format")),
+			mcp.WithString("date", mcp.Description("Optional date for single-day reports like Day Book")),
+			mcp.WithString("filename", mcp.Description("Optional custom file name for the generated PDF (e.g. 'Invoice_102.pdf')")),
+		),
+		s.handlers.HandleGeneratePDF,
+	)
+
 	// 8. tally_execute_xml
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_execute_xml",
@@ -255,6 +274,8 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
 	s.activePort = port
 	s.mu.Unlock()
 
+	s.handlers.SetBaseURL(fmt.Sprintf("http://localhost:%d", port))
+
 	// Disable localhost protection so other machines on the LAN can connect cleanly
 	sseServer := server.NewSSEServer(s.mcpServer, server.WithSSEDisableLocalhostProtection(true))
 	streamableServer := server.NewStreamableHTTPServer(s.mcpServer, server.WithDisableLocalhostProtection(true))
@@ -271,6 +292,11 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
 	mux.Handle("/sse", authMiddleware.Wrap(sseServer))
 	mux.Handle("/message", authMiddleware.Wrap(sseServer))
 
+	// PDF file downloads endpoint (/files/)
+	pdfDir := filepath.Join(os.TempDir(), "tally-mcp-pdf")
+	_ = os.MkdirAll(pdfDir, 0755)
+	mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(pdfDir))))
+
 	// Health endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -283,6 +309,7 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
 				"streamable_http": "/mcp",
 				"sse":             "/sse",
 				"message":         "/message",
+				"files":           "/files",
 			},
 			"port":      port,
 			"tally_url": s.tallyClient.BaseURL(),
@@ -328,6 +355,7 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
       <li><strong>Streamable HTTP Endpoint:</strong> <code>/mcp</code> <span style="color:#38bdf8;">(Recommended - MCP Spec 2025-03-26)</span></li>
       <li><strong>MCP SSE Endpoint:</strong> <code>/sse</code> (Legacy SSE)</li>
       <li><strong>MCP Message Endpoint:</strong> <code>/message</code></li>
+      <li><strong>PDF Downloads Endpoint:</strong> <code>/files/</code></li>
       <li><strong>Health Check:</strong> <code>/health</code></li>
     </ul>
 

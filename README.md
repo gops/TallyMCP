@@ -46,6 +46,7 @@ A high-performance, **self-updating Windows executable** written in Go that acts
   - Deep Voucher Drilldown with full debit/credit legs, inventory items, batch details, bill allocations, and GST tax breakdown (`tally_get_voucher`).
   - Real-time Trial Balance report (`tally_get_trial_balance`).
   - Dedicated Financial Reports: Profit & Loss statement (`tally_get_profit_and_loss`), Balance Sheet (`tally_get_balance_sheet`), Bills Receivable & Payable aging analysis (`tally_get_outstanding_receivables`, `tally_get_outstanding_payables`), and Day Book entries (`tally_get_daybook`).
+  - On-Demand PDF Export & Delivery: Instruct Tally to generate and export any financial statement or invoice/voucher directly to PDF (`tally_generate_pdf`). Automatically saved in the local temporary directory, downloadable via HTTP (`/files/`), and transmitted to requesting AI agents via MCP.
   - Advanced raw XML / TDL query executor (`tally_execute_xml`).
   - Ledger creation (`tally_create_ledger`).
 - 📜 **100% Open Source**: Permissive [MIT License](./LICENSE).
@@ -177,6 +178,7 @@ If you enabled authentication in `config.yaml`:
 | `tally_get_outstanding_receivables` | Fetch Bills Receivable bill-by-bill aging report (who owes us money) | `party`, `from_date`, `to_date` |
 | `tally_get_outstanding_payables` | Fetch Bills Payable bill-by-bill aging report (who we owe money to) | `party`, `from_date`, `to_date` |
 | `tally_get_daybook` | Fetch Day Book report listing all transactions entered on a specific date | `date` *(YYYYMMDD or YYYY-MM-DD)* |
+| `tally_generate_pdf` | Instruct Tally to export report or invoice to PDF, store in temp folder, and deliver via MCP | `report_type` *(required)*, `voucher_no`, `voucher_type`, `party`, `from_date`, `to_date`, `date`, `filename` |
 | `tally_execute_xml` | Execute raw TDL or XML envelopes against Tally | `xml_content` *(required)* |
 | `tally_create_ledger` | Create a new ledger master in Tally | `name`, `parent`, `opening_balance` |
 | `system_check_update` | Query GitHub Releases for available updates | *none* |

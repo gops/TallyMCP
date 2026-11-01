@@ -306,6 +306,33 @@ const createLedgerTemplate = `<ENVELOPE>
   </BODY>
 </ENVELOPE>`
 
+const exportPDFTemplate = `<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>{{.ReportID}}</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:PDF</SVEXPORTFORMAT>
+        <SVEXPORTLOCATION>{{.ExportLocation}}</SVEXPORTLOCATION>
+        <SVPRINTFILENAME>{{.PrintFileName}}</SVPRINTFILENAME>
+        <SVOPENFILEAFTEREXPORT>No</SVOPENFILEAFTEREXPORT>
+        {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
+        {{if .FromDate}}<SVFROMDATE>{{.FromDate}}</SVFROMDATE>{{end}}
+        {{if .ToDate}}<SVTODATE>{{.ToDate}}</SVTODATE>{{end}}
+        {{if .Date}}<SVFROMDATE>{{.Date}}</SVFROMDATE><SVTODATE>{{.Date}}</SVTODATE>{{end}}
+        {{if .Party}}<LEDGERNAME>{{.Party}}</LEDGERNAME>{{end}}
+        {{if .VoucherNo}}<VOUCHERNUMBER>{{.VoucherNo}}</VOUCHERNUMBER>{{end}}
+        {{if .VoucherType}}<VOUCHERTYPENAME>{{.VoucherType}}</VOUCHERTYPENAME>{{end}}
+        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+      </STATICVARIABLES>
+    </DESC>
+  </BODY>
+</ENVELOPE>`
+
 func executeTemplate(name, tmplStr string, data any) (string, error) {
 	tmpl, err := template.New(name).Parse(tmplStr)
 	if err != nil {
@@ -438,5 +465,49 @@ func BuildDayBookXML(company, date string) (string, error) {
 	return executeTemplate("dayBook", dayBookTemplate, map[string]string{
 		"Company": company,
 		"Date":    CleanDate(date),
+	})
+}
+
+// NormalizeReportID standardizes user/agent report names into Tally's expected ID.
+func NormalizeReportID(reportType string) string {
+	lower := strings.ToLower(strings.TrimSpace(reportType))
+	switch lower {
+	case "balance sheet", "balancesheet", "bs":
+		return "Balance Sheet"
+	case "profit and loss", "profit & loss", "p&l", "pl", "profitandloss":
+		return "Profit and Loss"
+	case "day book", "daybook", "db":
+		return "Day Book"
+	case "trial balance", "trialbalance", "tb":
+		return "Trial Balance"
+	case "bills receivable", "receivable", "receivables", "outstanding receivables", "outstanding_receivables":
+		return "Bills Receivable"
+	case "bills payable", "payable", "payables", "outstanding payables", "outstanding_payables":
+		return "Bills Payable"
+	case "stock summary", "stocksummary", "inventory":
+		return "Stock Summary"
+	case "voucher", "invoice", "voucher printing", "sales invoice", "bill":
+		return "Voucher"
+	default:
+		if strings.TrimSpace(reportType) != "" {
+			return strings.TrimSpace(reportType)
+		}
+		return "Balance Sheet"
+	}
+}
+
+// BuildExportPDFXML generates the XML telling Tally to export a report or voucher directly to a PDF file on disk.
+func BuildExportPDFXML(company, reportID, exportLocation, printFileName, fromDate, toDate, date, party, voucherNo, voucherType string) (string, error) {
+	return executeTemplate("exportPDF", exportPDFTemplate, map[string]string{
+		"Company":        company,
+		"ReportID":       NormalizeReportID(reportID),
+		"ExportLocation": strings.TrimSpace(exportLocation),
+		"PrintFileName":  strings.TrimSpace(printFileName),
+		"FromDate":       CleanDate(fromDate),
+		"ToDate":         CleanDate(toDate),
+		"Date":           CleanDate(date),
+		"Party":          strings.TrimSpace(party),
+		"VoucherNo":      strings.TrimSpace(voucherNo),
+		"VoucherType":    strings.TrimSpace(voucherType),
 	})
 }
