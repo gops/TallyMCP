@@ -35,10 +35,10 @@ func TestIsNewerVersion(t *testing.T) {
 
 func TestSelectMatchingAsset(t *testing.T) {
 	assets := []updater.GitHubAsset{
-		{Name: "tally-mcp-linux-amd64.tar.gz"},
-		{Name: "tally-mcp-darwin-arm64.tar.gz"},
 		{Name: "tally-mcp-windows-amd64.zip"},
 		{Name: "tally-mcp-windows-amd64.exe"},
+		{Name: "tally-mcp-windows-arm64.zip"},
+		{Name: "tally-mcp-windows-arm64.exe"},
 	}
 
 	asset, err := updater.SelectMatchingAsset(assets)

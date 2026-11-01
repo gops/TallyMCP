@@ -1,34 +1,27 @@
-# Tally MCP Server Makefile
-BINARY_NAME=tally-mcp
+# Tally MCP Server Makefile (Dedicated Windows Build)
+BINARY_NAME=tally-mcp.exe
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "v1.0.0")
 COMMIT?=$(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
 BUILD_DATE?=$(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
-LDFLAGS=-ldflags "-s -w -X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.BuildDate=$(BUILD_DATE)"
 WINDOWS_LDFLAGS=-ldflags "-s -w -H=windowsgui -X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.BuildDate=$(BUILD_DATE)"
 
-.PHONY: all build build-windows test clean fmt run
+.PHONY: all build build-arm release-build test clean fmt
 
 all: test build
 
+# Compile Windows 64-bit standalone executable (System Tray, no cmd window)
 build:
-	go build $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/tally-mcp
+	GOOS=windows GOARCH=amd64 go build -mod=vendor $(WINDOWS_LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/tally-mcp
 
-# Cross compile standalone Windows 64-bit executable (Runs in System Tray without cmd window)
-build-windows:
-	GOOS=windows GOARCH=amd64 go build $(WINDOWS_LDFLAGS) -o bin/$(BINARY_NAME).exe ./cmd/tally-mcp
+# Compile Windows ARM64 executable
+build-arm:
+	GOOS=windows GOARCH=arm64 go build -mod=vendor $(WINDOWS_LDFLAGS) -o bin/tally-mcp-arm64.exe ./cmd/tally-mcp
 
-# Cross compile Windows ARM64 executable
-build-windows-arm:
-	GOOS=windows GOARCH=arm64 go build $(WINDOWS_LDFLAGS) -o bin/$(BINARY_NAME)-arm64.exe ./cmd/tally-mcp
-
-# Build all release targets into dist/
+# Build all release packages into dist/
 release-build:
 	mkdir -p dist
-	GOOS=windows GOARCH=amd64 go build $(WINDOWS_LDFLAGS) -o dist/$(BINARY_NAME).exe ./cmd/tally-mcp
-	GOOS=windows GOARCH=arm64 go build $(WINDOWS_LDFLAGS) -o dist/$(BINARY_NAME)-arm64.exe ./cmd/tally-mcp
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-linux-amd64 ./cmd/tally-mcp
-	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-darwin-arm64 ./cmd/tally-mcp
-	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-darwin-amd64 ./cmd/tally-mcp
+	GOOS=windows GOARCH=amd64 go build -mod=vendor $(WINDOWS_LDFLAGS) -o dist/$(BINARY_NAME) ./cmd/tally-mcp
+	GOOS=windows GOARCH=arm64 go build -mod=vendor $(WINDOWS_LDFLAGS) -o dist/tally-mcp-arm64.exe ./cmd/tally-mcp
 
 test:
 	go test -v ./...

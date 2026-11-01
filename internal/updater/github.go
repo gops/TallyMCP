@@ -82,28 +82,25 @@ func FetchLatestRelease(ctx context.Context, repo string) (*GitHubRelease, error
 
 // SelectMatchingAsset selects the release asset best matching the current operating system and CPU architecture.
 func SelectMatchingAsset(assets []GitHubAsset) (*GitHubAsset, error) {
-	goos := runtime.GOOS
 	goarch := runtime.GOARCH
 
-	// Primary search: exact match with os and arch
+	// Primary search: Windows asset matching cpu architecture (amd64 or arm64)
 	for _, asset := range assets {
 		name := strings.ToLower(asset.Name)
-		if strings.Contains(name, goos) && strings.Contains(name, goarch) {
+		if strings.Contains(name, "windows") && strings.Contains(name, goarch) {
 			return &asset, nil
 		}
 	}
 
-	// Secondary search: for windows, check .exe or windows
-	if goos == "windows" {
-		for _, asset := range assets {
-			name := strings.ToLower(asset.Name)
-			if strings.HasSuffix(name, ".exe") || strings.Contains(name, "win") {
-				return &asset, nil
-			}
+	// Secondary search: any windows asset or .exe
+	for _, asset := range assets {
+		name := strings.ToLower(asset.Name)
+		if strings.Contains(name, "windows") || strings.HasSuffix(name, ".exe") {
+			return &asset, nil
 		}
 	}
 
-	return nil, fmt.Errorf("no compatible asset found in release for OS=%s, Arch=%s (checked %d assets)", goos, goarch, len(assets))
+	return nil, fmt.Errorf("no compatible Windows asset found in release for Arch=%s (checked %d assets)", goarch, len(assets))
 }
 
 // IsNewerVersion returns true if remoteVersion is strictly newer than currentVersion.

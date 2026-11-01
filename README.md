@@ -222,7 +222,7 @@ To publish a new release:
    git push origin v1.0.1
    ```
 3. GitHub Actions will automatically:
-   - Cross-compile standalone binaries for Windows (`amd64`, `arm64`), Linux, and macOS.
+   - Compile standalone Windows binaries (`amd64` and `arm64`).
    - Generate SHA-256 `checksums.txt`.
    - Publish a new GitHub Release with attached `.zip` and `.exe` assets.
    - Any running `tally-mcp.exe` instances will detect the new version and can update with `--update`!
@@ -231,7 +231,7 @@ To publish a new release:
 
 ## 8. Building from Source
 
-Requirements: [Go 1.22+](https://go.dev/)
+Requirements: [Go 1.24+](https://go.dev/)
 
 ```bash
 # Clone the repository
@@ -241,11 +241,8 @@ cd tally-mcp
 # Run unit tests
 go test -v ./...
 
-# Build local binary
+# Build Windows .exe
 make build
-
-# Cross-compile Windows .exe from Mac or Linux
-make build-windows
 # Binary will be generated at bin/tally-mcp.exe
 ```
 
