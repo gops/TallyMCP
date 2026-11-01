@@ -18,9 +18,12 @@ import (
 
 // Client handles communication with Tally ERP 9 / TallyPrime XML Server.
 type Client struct {
-	baseURL        string
-	httpClient     *http.Client
-	defaultCompany string
+	baseURL          string
+	httpClient       *http.Client
+	defaultCompany   string
+	querySem         chan struct{} // Capacity 1: guarantees strictly 1 query executing at any time (no parallel queries to Tally)
+	queueSem         chan struct{} // Capacity MaxQueueSize: buffers incoming queries before dropping/rejecting
+	throttleDuration time.Duration // Cooldown sleep between consecutive queries
 }
 
 // NewClient creates a new Tally XML Client.
@@ -35,12 +38,25 @@ func NewClient(cfg config.TallyConfig) *Client {
 		url = "http://localhost:9000"
 	}
 
+	maxQueueSize := cfg.MaxQueueSize
+	if maxQueueSize <= 0 {
+		maxQueueSize = 100
+	}
+
+	throttleMs := cfg.ThrottleMs
+	if throttleMs <= 0 {
+		throttleMs = 15
+	}
+
 	return &Client{
 		baseURL: url,
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
-		defaultCompany: cfg.DefaultCompany,
+		defaultCompany:   cfg.DefaultCompany,
+		querySem:         make(chan struct{}, 1),
+		queueSem:         make(chan struct{}, maxQueueSize),
+		throttleDuration: time.Duration(throttleMs) * time.Millisecond,
 	}
 }
 
@@ -59,8 +75,48 @@ func (c *Client) DefaultCompany() string {
 	return c.defaultCompany
 }
 
+// QueueStats returns the current number of buffered requests and the maximum buffer capacity.
+func (c *Client) QueueStats() (length, capacity int) {
+	return len(c.queueSem), cap(c.queueSem)
+}
+
+// IsBusy returns true if a query is actively being processed by Tally.
+func (c *Client) IsBusy() bool {
+	return len(c.querySem) > 0
+}
+
 // ExecuteRawXML sends an XML string to Tally and returns the raw response bytes.
+// It guarantees serial execution (no parallel queries) to prevent overloading Tally ERP / TallyPrime,
+// buffering concurrent queries in a bounded queue up to MaxQueueSize.
 func (c *Client) ExecuteRawXML(ctx context.Context, xmlContent string) ([]byte, error) {
+	// Step 1: Request a slot in the incoming query buffer
+	select {
+	case c.queueSem <- struct{}{}:
+		defer func() { <-c.queueSem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		return nil, fmt.Errorf("tally query buffer is full (%d requests waiting); please try again shortly", cap(c.queueSem))
+	}
+
+	// Step 2: Acquire the single query execution slot (guarantees NO parallel queries reach Tally)
+	select {
+	case c.querySem <- struct{}{}:
+		defer func() {
+			if c.throttleDuration > 0 {
+				time.Sleep(c.throttleDuration)
+			}
+			<-c.querySem
+		}()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	// Step 3: Execute the HTTP request against Tally
+	return c.doHTTP(ctx, xmlContent)
+}
+
+func (c *Client) doHTTP(ctx context.Context, xmlContent string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewBufferString(xmlContent))
 	if err != nil {
 		return nil, fmt.Errorf("creating http request: %w", err)
@@ -92,6 +148,8 @@ func (c *Client) Ping(ctx context.Context) (*ServerStatus, error) {
 		Connected:     false,
 		TallyURL:      c.baseURL,
 		TargetCompany: c.defaultCompany,
+		QueueLength:   len(c.queueSem),
+		QueueCapacity: cap(c.queueSem),
 	}
 
 	companies, err := c.ListCompanies(ctx)

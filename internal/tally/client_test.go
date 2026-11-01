@@ -6,7 +6,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"tally-mcp/internal/config"
 	"tally-mcp/internal/tally"
@@ -668,4 +671,131 @@ func TestClientGeneratePDF(t *testing.T) {
 			t.Errorf("expected %d bytes, got %d", len(streamedPDF), len(pdfBytes))
 		}
 	})
+}
+
+func TestQuerySerializationNoParallelExecution(t *testing.T) {
+	var activeQueries atomic.Int32
+	var maxConcurrent atomic.Int32
+
+	cfg := config.TallyConfig{
+		URL:            "http://mock-tally:9000",
+		TimeoutSeconds: 5,
+		MaxQueueSize:   50,
+		ThrottleMs:     5,
+	}
+
+	client := tally.NewClient(cfg)
+	client.SetTransport(roundTripFunc(func(req *http.Request) *http.Response {
+		cur := activeQueries.Add(1)
+		defer activeQueries.Add(-1)
+
+		// Record highest concurrency seen inside roundTripper
+		for {
+			oldMax := maxConcurrent.Load()
+			if cur <= oldMax || maxConcurrent.CompareAndSwap(oldMax, cur) {
+				break
+			}
+		}
+
+		time.Sleep(15 * time.Millisecond)
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/xml;charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader(`<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER></ENVELOPE>`)),
+		}
+	}))
+
+	const totalWorkers = 10
+	var wg sync.WaitGroup
+	ctx := context.Background()
+
+	// Launch 10 parallel queries simultaneously
+	for i := 0; i < totalWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := client.ExecuteRawXML(ctx, `<ENVELOPE></ENVELOPE>`)
+			if err != nil {
+				t.Errorf("unexpected query error: %v", err)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if maxConcurrent.Load() > 1 {
+		t.Fatalf("expected max 1 concurrent query to Tally, but saw %d parallel queries!", maxConcurrent.Load())
+	}
+}
+
+func TestQueryBufferOverflow(t *testing.T) {
+	cfg := config.TallyConfig{
+		URL:            "http://mock-tally:9000",
+		TimeoutSeconds: 5,
+		MaxQueueSize:   2, // small queue of 2 items
+		ThrottleMs:     0,
+	}
+
+	client := tally.NewClient(cfg)
+
+	// Block the first query so subsequent queries queue up
+	blocker := make(chan struct{})
+	client.SetTransport(roundTripFunc(func(req *http.Request) *http.Response {
+		<-blocker
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/xml;charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader(`<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER></ENVELOPE>`)),
+		}
+	}))
+
+	ctx := context.Background()
+
+	// Query 1: will acquire querySem and block
+	go func() {
+		_, _ = client.ExecuteRawXML(ctx, `<ENVELOPE>1</ENVELOPE>`)
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	// Query 2: enters queueSem (slot 1 of 2)
+	go func() {
+		_, _ = client.ExecuteRawXML(ctx, `<ENVELOPE>2</ENVELOPE>`)
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	// Query 3: enters queueSem (slot 2 of 2)
+	go func() {
+		_, _ = client.ExecuteRawXML(ctx, `<ENVELOPE>3</ENVELOPE>`)
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	// Query 4: buffer is full! Should immediately fail
+	_, err := client.ExecuteRawXML(ctx, `<ENVELOPE>4</ENVELOPE>`)
+	if err == nil {
+		t.Fatalf("expected error due to full query buffer, but got nil")
+	}
+	if !strings.Contains(err.Error(), "tally query buffer is full") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+
+	// Release blocked queries
+	close(blocker)
+}
+
+func TestQueryContextCancellation(t *testing.T) {
+	cfg := config.TallyConfig{
+		URL:            "http://mock-tally:9000",
+		TimeoutSeconds: 5,
+		MaxQueueSize:   10,
+	}
+
+	client := tally.NewClient(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel context
+
+	_, err := client.ExecuteRawXML(ctx, `<ENVELOPE></ENVELOPE>`)
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got: %v", err)
+	}
 }

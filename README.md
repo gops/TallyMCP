@@ -47,6 +47,7 @@ A high-performance, **self-updating Windows executable** written in Go that acts
   - Real-time Trial Balance report (`tally_get_trial_balance`).
   - Dedicated Financial Reports: Profit & Loss statement (`tally_get_profit_and_loss`), Balance Sheet (`tally_get_balance_sheet`), Bills Receivable & Payable aging analysis (`tally_get_outstanding_receivables`, `tally_get_outstanding_payables`), and Day Book entries (`tally_get_daybook`).
   - On-Demand PDF Export & Delivery: Instruct Tally to generate and export any financial statement or invoice/voucher directly to PDF (`tally_generate_pdf`). Automatically saved in the local temporary directory, downloadable via HTTP (`/files/`), and transmitted to requesting AI agents via MCP.
+  - 🚦 **Zero-Overload Query Serializer & Buffer**: Protects Tally ERP 9 / TallyPrime's single-threaded XML engine from freezing or dropping connections under high load. Automatically serializes all incoming requests (strictly zero parallel queries), buffers up to 100 queries in an in-memory queue, applies a cooldown interval (`throttle_ms: 15`), and exposes real-time queue health in `tally_status` and `/health`.
   - Advanced raw XML / TDL query executor (`tally_execute_xml`).
   - Ledger creation (`tally_create_ledger`).
 - 📜 **100% Open Source**: Permissive [MIT License](./LICENSE).
@@ -237,6 +238,10 @@ tally:
   timeout_seconds: 30
   # Leave empty to use whichever company is currently open in Tally
   default_company: ""
+  # Maximum number of incoming queries to buffer when Tally is busy (prevents overload)
+  max_queue_size: 100
+  # Cooldown throttle in milliseconds between consecutive queries (ensures no parallel queries)
+  throttle_ms: 15
 
 auth:
   # Set to true to require authentication from LAN clients

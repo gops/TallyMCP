@@ -68,6 +68,10 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 		if !ok || endpoints["streamable_http"] != "/mcp" || endpoints["sse"] != "/sse" {
 			t.Errorf("expected endpoints to include /mcp and /sse, got: %v", body["endpoints"])
 		}
+
+		if _, ok := body["queue_capacity"]; !ok {
+			t.Errorf("expected queue_capacity in health check")
+		}
 	})
 
 	// 2. Test CORS OPTIONS on /mcp

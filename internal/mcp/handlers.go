@@ -39,11 +39,14 @@ func (h *ToolHandlers) SetBaseURL(baseURL string) {
 func (h *ToolHandlers) HandleTallyStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	status, err := h.tallyClient.Ping(ctx)
 	if err != nil {
+		qLen, qCap := h.tallyClient.QueueStats()
 		resp := map[string]any{
-			"connected": false,
-			"tally_url": h.tallyClient.BaseURL(),
-			"error":     err.Error(),
-			"hint":      "Verify Tally ERP 9 / TallyPrime is running and server port 9000 is enabled in F12 / Advanced Configuration.",
+			"connected":      false,
+			"tally_url":      h.tallyClient.BaseURL(),
+			"queue_length":   qLen,
+			"queue_capacity": qCap,
+			"error":          err.Error(),
+			"hint":           "Verify Tally ERP 9 / TallyPrime is running and server port 9000 is enabled in F12 / Advanced Configuration.",
 		}
 		jsonStr, _ := tally.PrettyJSON(resp)
 		return mcp.NewToolResultText(jsonStr), nil

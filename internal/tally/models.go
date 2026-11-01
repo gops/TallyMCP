@@ -203,5 +203,7 @@ type ServerStatus struct {
 	TargetCompany  string        `json:"target_company,omitempty"`
 	CompaniesCount int           `json:"companies_count"`
 	Companies      []CompanyItem `json:"companies,omitempty"`
+	QueueLength    int           `json:"queue_length"`
+	QueueCapacity  int           `json:"queue_capacity"`
 	Error          string        `json:"error,omitempty"`
 }

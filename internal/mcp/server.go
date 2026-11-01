@@ -299,6 +299,7 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
 
 	// Health endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		qLen, qCap := s.tallyClient.QueueStats()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":     "ok",
@@ -311,10 +312,12 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
 				"message":         "/message",
 				"files":           "/files",
 			},
-			"port":      port,
-			"tally_url": s.tallyClient.BaseURL(),
-			"auth":      s.cfg.Auth.Enabled,
-			"timestamp": time.Now().Format(time.RFC3339),
+			"port":           port,
+			"tally_url":      s.tallyClient.BaseURL(),
+			"queue_length":   qLen,
+			"queue_capacity": qCap,
+			"auth":           s.cfg.Auth.Enabled,
+			"timestamp":      time.Now().Format(time.RFC3339),
 		})
 	})
 

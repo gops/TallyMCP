@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -34,6 +35,10 @@ type TallyConfig struct {
 	TimeoutSeconds int `yaml:"timeout_seconds"`
 	// DefaultCompany optionally targets a specific company name if multiple companies are loaded.
 	DefaultCompany string `yaml:"default_company"`
+	// MaxQueueSize buffers incoming queries to prevent overloading Tally (default: 100).
+	MaxQueueSize int `yaml:"max_queue_size"`
+	// ThrottleMs is a small cooldown period between queries in milliseconds (default: 15).
+	ThrottleMs int `yaml:"throttle_ms"`
 }
 
 // AuthConfig defines API key / Bearer token security for local network access.
@@ -70,6 +75,8 @@ func DefaultConfig() *Config {
 			URL:            "http://localhost:9000",
 			TimeoutSeconds: 30,
 			DefaultCompany: "",
+			MaxQueueSize:   100,
+			ThrottleMs:     15,
 		},
 		Auth: AuthConfig{
 			Enabled: false,
@@ -150,6 +157,16 @@ func applyEnvOverrides(cfg *Config) {
 	if val := os.Getenv("TALLY_MCP_GITHUB_REPO"); val != "" {
 		cfg.Updater.GitHubRepo = val
 	}
+	if val := os.Getenv("TALLY_MAX_QUEUE_SIZE"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			cfg.Tally.MaxQueueSize = n
+		}
+	}
+	if val := os.Getenv("TALLY_THROTTLE_MS"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n >= 0 {
+			cfg.Tally.ThrottleMs = n
+		}
+	}
 }
 
 // WriteDefaultConfigFile writes a fully commented default config file to path.
@@ -171,6 +188,10 @@ tally:
   timeout_seconds: 30
   # Specific company name (leave blank to use currently active company in Tally)
   default_company: ""
+  # Maximum number of incoming queries to buffer when Tally is busy (prevents overload)
+  max_queue_size: 100
+  # Throttle cooldown in milliseconds between queries (ensures no parallel queries)
+  throttle_ms: 15
 
 auth:
   # Set to true to require authentication from LAN clients
