@@ -15,6 +15,7 @@ import (
 	"tally-mcp/internal/config"
 	"tally-mcp/internal/mcp"
 	"tally-mcp/internal/tally"
+	"tally-mcp/internal/tray"
 	"tally-mcp/internal/updater"
 )
 
@@ -26,7 +27,10 @@ var (
 )
 
 func main() {
-	// Step 0: Clean up any stale .old binary from a previous self-update
+	// Step 0: Attach to parent console on Windows if invoked from cmd/PowerShell
+	tray.AttachParentConsole()
+
+	// Clean up any stale .old binary from a previous self-update
 	updater.CleanupOldBinary()
 
 	// Step 1: Parse CLI flags
@@ -36,6 +40,7 @@ func main() {
 	transportFlag := flag.String("transport", "", "Transport mode: sse or stdio")
 	apiKeyFlag := flag.String("api-key", "", "API key / Bearer token for local network MCP authentication")
 	repoFlag := flag.String("repo", "", "GitHub repository for updates (owner/repo)")
+	noTrayFlag := flag.Bool("no-tray", false, "Disable system tray and run in console mode")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	checkUpdateFlag := flag.Bool("check-update", false, "Check for newer GitHub releases and exit")
 	updateFlag := flag.Bool("update", false, "Download and apply the latest update, then exit")
@@ -196,8 +201,52 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if err := srv.Run(ctx); err != nil {
+	serverErrChan := make(chan error, 1)
+	go func() {
+		if err := srv.Run(ctx); err != nil {
+			serverErrChan <- err
+		}
+	}()
+
+	// If headless mode is requested or stdio transport is used, run without tray
+	if *noTrayFlag || cfg.Server.Transport == "stdio" {
+		select {
+		case err := <-serverErrChan:
+			log.Fatalf("[FATAL] Server terminated with error: %v", err)
+		case <-ctx.Done():
+			log.Println("[INFO] Server exited cleanly.")
+		}
+		return
+	}
+
+	// Step 8: Run System Tray (runs on main thread on Windows; blocks until exit)
+	trayCfg := tray.Config{
+		Version:    Version,
+		ListenURL:  "http://" + cfg.Server.ListenAddress,
+		TallyURL:   cfg.Tally.URL,
+		ConfigPath: configPath,
+		GitHubRepo: cfg.Updater.GitHubRepo,
+		OnCheckUpdate: func(c context.Context) (bool, string, string, error) {
+			info, err := updater.CheckForUpdate(c, Version, cfg.Updater.GitHubRepo)
+			if err != nil {
+				return false, "", "", err
+			}
+			return info.HasUpdate, info.LatestVersion, info.ReleaseNotes, nil
+		},
+		OnQuit: func() {
+			cancel()
+		},
+	}
+
+	if err := tray.Run(ctx, trayCfg); err != nil {
+		log.Printf("[WARN] System tray error: %v", err)
+	}
+
+	// Wait for server to finish cleanup
+	select {
+	case err := <-serverErrChan:
 		log.Fatalf("[FATAL] Server terminated with error: %v", err)
+	case <-time.After(1 * time.Second):
 	}
 	log.Println("[INFO] Server exited cleanly.")
 }

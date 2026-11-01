@@ -23,7 +23,7 @@ A high-performance, **self-updating Windows executable** written in Go that acts
 
 ## Key Features
 
-- ⚡ **Standalone Windows Executable**: Zero external runtime dependencies. Runs as a single portable `.exe` on Windows (also cross-compiles for Linux & macOS).
+- ⚡ **Standalone Windows System Tray App**: Zero external runtime dependencies. Runs silently in the **Windows System Tray (Notification Area)** without an intrusive command prompt / cmd window. Right-click the tray icon to view status, open the web dashboard, edit `config.yaml`, check for updates, or exit. (Use `--no-tray` for headless/server mode).
 - 🔄 **Automated Self-Updater**:
   - Automatically queries GitHub Releases for newer releases on startup.
   - Non-intrusive notification in console and via MCP tools.

@@ -51,7 +51,7 @@ jobs:
           GOARCH: amd64
         run: |
           TAG="${{ steps.vars.outputs.tag }}"
-          go build -mod=vendor -ldflags "-s -w -X main.Version=${TAG} -X main.Commit=${{ github.sha }} -X main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" -o dist/tally-mcp.exe ./cmd/tally-mcp
+          go build -mod=vendor -ldflags "-s -w -H=windowsgui -X main.Version=${TAG} -X main.Commit=${{ github.sha }} -X main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" -o dist/tally-mcp.exe ./cmd/tally-mcp
           cd dist
           zip tally-mcp-windows-amd64.zip tally-mcp.exe ../config.example.yaml ../README.md ../LICENSE
           cp tally-mcp.exe tally-mcp-windows-amd64.exe
@@ -63,7 +63,7 @@ jobs:
           GOARCH: arm64
         run: |
           TAG="${{ steps.vars.outputs.tag }}"
-          go build -mod=vendor -ldflags "-s -w -X main.Version=${TAG} -X main.Commit=${{ github.sha }} -X main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" -o dist/tally-mcp-arm64.exe ./cmd/tally-mcp
+          go build -mod=vendor -ldflags "-s -w -H=windowsgui -X main.Version=${TAG} -X main.Commit=${{ github.sha }} -X main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" -o dist/tally-mcp-arm64.exe ./cmd/tally-mcp
           cd dist
           zip tally-mcp-windows-arm64.zip tally-mcp-arm64.exe ../config.example.yaml ../README.md ../LICENSE
           cp tally-mcp-arm64.exe tally-mcp-windows-arm64.exe
