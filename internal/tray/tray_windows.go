@@ -4,6 +4,8 @@ package tray
 
 import (
 	"context"
+	_ "embed"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,32 +17,37 @@ import (
 	"unsafe"
 )
 
+//go:embed icon.ico
+var embeddedIconBytes []byte
+
 var (
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 	user32   = syscall.NewLazyDLL("user32.dll")
 	shell32  = syscall.NewLazyDLL("shell32.dll")
 
-	procGetModuleHandleW    = kernel32.NewProc("GetModuleHandleW")
-	procAttachConsole       = kernel32.NewProc("AttachConsole")
-	procRegisterClassExW    = user32.NewProc("RegisterClassExW")
-	procCreateWindowExW     = user32.NewProc("CreateWindowExW")
-	procDefWindowProcW      = user32.NewProc("DefWindowProcW")
-	procDestroyWindow       = user32.NewProc("DestroyWindow")
-	procPostQuitMessage     = user32.NewProc("PostQuitMessage")
-	procGetMessageW         = user32.NewProc("GetMessageW")
-	procTranslateMessage    = user32.NewProc("TranslateMessage")
-	procDispatchMessageW    = user32.NewProc("DispatchMessageW")
-	procPostMessageW        = user32.NewProc("PostMessageW")
-	procLoadIconW           = user32.NewProc("LoadIconW")
-	procCreatePopupMenu     = user32.NewProc("CreatePopupMenu")
-	procAppendMenuW         = user32.NewProc("AppendMenuW")
-	procDestroyMenu         = user32.NewProc("DestroyMenu")
-	procTrackPopupMenu      = user32.NewProc("TrackPopupMenu")
-	procGetCursorPos        = user32.NewProc("GetCursorPos")
-	procSetForegroundWindow = user32.NewProc("SetForegroundWindow")
-	procMessageBoxW         = user32.NewProc("MessageBoxW")
-	procShell_NotifyIconW   = shell32.NewProc("Shell_NotifyIconW")
-	procShellExecuteW       = shell32.NewProc("ShellExecuteW")
+	procGetModuleHandleW         = kernel32.NewProc("GetModuleHandleW")
+	procAttachConsole            = kernel32.NewProc("AttachConsole")
+	procRegisterClassExW         = user32.NewProc("RegisterClassExW")
+	procCreateWindowExW          = user32.NewProc("CreateWindowExW")
+	procDefWindowProcW           = user32.NewProc("DefWindowProcW")
+	procDestroyWindow            = user32.NewProc("DestroyWindow")
+	procPostQuitMessage          = user32.NewProc("PostQuitMessage")
+	procGetMessageW              = user32.NewProc("GetMessageW")
+	procTranslateMessage         = user32.NewProc("TranslateMessage")
+	procDispatchMessageW         = user32.NewProc("DispatchMessageW")
+	procPostMessageW             = user32.NewProc("PostMessageW")
+	procLoadIconW                = user32.NewProc("LoadIconW")
+	procLoadImageW               = user32.NewProc("LoadImageW")
+	procCreateIconFromResourceEx = user32.NewProc("CreateIconFromResourceEx")
+	procCreatePopupMenu          = user32.NewProc("CreatePopupMenu")
+	procAppendMenuW              = user32.NewProc("AppendMenuW")
+	procDestroyMenu              = user32.NewProc("DestroyMenu")
+	procTrackPopupMenu           = user32.NewProc("TrackPopupMenu")
+	procGetCursorPos             = user32.NewProc("GetCursorPos")
+	procSetForegroundWindow      = user32.NewProc("SetForegroundWindow")
+	procMessageBoxW              = user32.NewProc("MessageBoxW")
+	procShell_NotifyIconW        = shell32.NewProc("Shell_NotifyIconW")
+	procShellExecuteW            = shell32.NewProc("ShellExecuteW")
 )
 
 const (
@@ -76,6 +83,9 @@ const (
 	TPM_RIGHTBUTTON = 0x0002
 
 	IDI_APPLICATION = 32512
+	IMAGE_ICON      = 1
+	LR_DEFAULTSIZE  = 0x00000040
+	LR_SHARED       = 0x00008000
 
 	MB_OK           = 0x00000000
 	MB_YESNO        = 0x00000004
@@ -182,6 +192,68 @@ func openURL(targetURL string) {
 	urlPtr, _ := syscall.UTF16PtrFromString(targetURL)
 	openPtr, _ := syscall.UTF16PtrFromString("open")
 	procShellExecuteW.Call(0, uintptr(unsafe.Pointer(openPtr)), uintptr(unsafe.Pointer(urlPtr)), 0, 0, 1)
+}
+
+func resolveDashboardURL(rawURL string) string {
+	target := rawURL
+	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
+		target = "http://" + target
+	}
+	// Windows browsers fail on 0.0.0.0 directly. Map to localhost.
+	target = strings.Replace(target, "://0.0.0.0:", "://localhost:", 1)
+	target = strings.Replace(target, "://0.0.0.0", "://localhost", 1)
+	return target
+}
+
+func loadAppIcon(hInstance uintptr) uintptr {
+	// 1. Try loading icon resource embedded in the PE header (via rsrc .syso)
+	hIcon, _, _ := procLoadImageW.Call(hInstance, 1, IMAGE_ICON, 0, 0, LR_DEFAULTSIZE|LR_SHARED)
+	if hIcon != 0 {
+		return hIcon
+	}
+
+	// 2. Try creating HICON directly from memory embedded icon bytes
+	if len(embeddedIconBytes) > 22 {
+		count := binary.LittleEndian.Uint16(embeddedIconBytes[4:6])
+		if count > 0 {
+			var bestOffset, bestSize uint32
+			for i := 0; i < int(count); i++ {
+				offset := 6 + i*16
+				if offset+16 > len(embeddedIconBytes) {
+					break
+				}
+				w := embeddedIconBytes[offset]
+				bytesInRes := binary.LittleEndian.Uint32(embeddedIconBytes[offset+8 : offset+12])
+				imgOffset := binary.LittleEndian.Uint32(embeddedIconBytes[offset+12 : offset+16])
+				if (w == 32 || w == 16 || bestOffset == 0) && int(imgOffset+bytesInRes) <= len(embeddedIconBytes) {
+					bestOffset = imgOffset
+					bestSize = bytesInRes
+					if w == 32 {
+						break
+					}
+				}
+			}
+
+			if bestOffset > 0 && bestSize > 0 {
+				subData := embeddedIconBytes[bestOffset : bestOffset+bestSize]
+				hCreated, _, _ := procCreateIconFromResourceEx.Call(
+					uintptr(unsafe.Pointer(&subData[0])),
+					uintptr(bestSize),
+					1, // TRUE = icon
+					0x00030000,
+					0, 0,
+					0,
+				)
+				if hCreated != 0 {
+					return hCreated
+				}
+			}
+		}
+	}
+
+	// 3. Fallback to generic system icon
+	fallback, _, _ := procLoadIconW.Call(0, IDI_APPLICATION)
+	return fallback
 }
 
 func openFile(path string) {
@@ -305,11 +377,7 @@ func wndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 
 		switch cmdID {
 		case idOpenDash:
-			target := cfg.ListenURL
-			if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
-				target = "http://" + target
-			}
-			openURL(target)
+			openURL(resolveDashboardURL(cfg.ListenURL))
 
 		case idOpenConfig:
 			if cfg.ConfigPath != "" {
@@ -453,7 +521,7 @@ func Run(ctx context.Context, cfg Config) error {
 	className, _ := syscall.UTF16PtrFromString("TallyMCPServerTrayClass")
 	windowTitle, _ := syscall.UTF16PtrFromString("Tally MCP Server")
 
-	hIcon, _, _ := procLoadIconW.Call(0, IDI_APPLICATION)
+	hIcon := loadAppIcon(hInstance)
 
 	var wc wndClassExW
 	wc.cbSize = uint32(unsafe.Sizeof(wc))
@@ -491,7 +559,7 @@ func Run(ctx context.Context, cfg Config) error {
 	nid.hIcon = hIcon
 	nid.szTip = stringToUTF16Array128(fmt.Sprintf("Tally MCP Server (%s)", cfg.Version))
 	nid.szInfoTitle = stringToUTF16Array64("Tally MCP Server")
-	nid.szInfo = stringToUTF16Array256(fmt.Sprintf("Server is running in system tray.\nDashboard: %s", cfg.ListenURL))
+	nid.szInfo = stringToUTF16Array256(fmt.Sprintf("Server is running in system tray.\nDashboard: %s", resolveDashboardURL(cfg.ListenURL)))
 	nid.dwInfoFlags = NIIF_INFO
 
 	currentNID = nid

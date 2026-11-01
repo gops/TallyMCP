@@ -7,7 +7,7 @@ dist/
 *.zip
 *.tar.gz
 *.iso
-tally-mcp
+/tally-mcp
 
 # Local runtime configuration and secrets (CRITICAL: Do not remove)
 config.yaml

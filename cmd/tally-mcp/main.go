@@ -253,9 +253,17 @@ func main() {
 		updateMu       sync.Mutex
 	)
 
+	dashURL := "http://" + cfg.Server.ListenAddress
+	if host, port, err := net.SplitHostPort(cfg.Server.ListenAddress); err == nil {
+		if host == "0.0.0.0" || host == "" {
+			host = "localhost"
+		}
+		dashURL = fmt.Sprintf("http://%s:%s", host, port)
+	}
+
 	trayCfg := tray.Config{
 		Version:    Version,
-		ListenURL:  "http://" + cfg.Server.ListenAddress,
+		ListenURL:  dashURL,
 		TallyURL:   cfg.Tally.URL,
 		ConfigPath: configPath,
 		GitHubRepo: cfg.Updater.GitHubRepo,
