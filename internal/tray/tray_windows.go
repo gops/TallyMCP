@@ -68,6 +68,8 @@ const (
 	MF_SEPARATOR    = 0x00000800
 	MF_GRAYED       = 0x00000001
 	MF_DISABLED     = 0x00000002
+	MF_CHECKED      = 0x00000008
+	MF_UNCHECKED    = 0x00000000
 
 	TPM_BOTTOMALIGN = 0x0020
 	TPM_LEFTALIGN   = 0x0000
@@ -85,12 +87,13 @@ const (
 )
 
 const (
-	idHeader      = 2001
-	idTallyStatus = 2002
-	idOpenDash    = 2003
-	idOpenConfig  = 2004
-	idCheckUpdate = 2005
-	idExit        = 2006
+	idHeader          = 2001
+	idTallyStatus     = 2002
+	idOpenDash        = 2003
+	idOpenConfig      = 2004
+	idToggleAutoStart = 2005
+	idCheckUpdate     = 2006
+	idExit            = 2007
 )
 
 type wndClassExW struct {
@@ -269,6 +272,15 @@ func wndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 			cfgText, _ := syscall.UTF16PtrFromString("📄 Open config.yaml")
 			procAppendMenuW.Call(hMenu, MF_STRING, idOpenConfig, uintptr(unsafe.Pointer(cfgText)))
 
+			procAppendMenuW.Call(hMenu, MF_SEPARATOR, 0, 0)
+
+			autoStartFlags := uint32(MF_STRING)
+			if IsAutoStartEnabled() {
+				autoStartFlags |= MF_CHECKED
+			}
+			autoStartText, _ := syscall.UTF16PtrFromString("🚀 Start with Windows")
+			procAppendMenuW.Call(hMenu, uintptr(autoStartFlags), idToggleAutoStart, uintptr(unsafe.Pointer(autoStartText)))
+
 			updText, _ := syscall.UTF16PtrFromString("🔄 Check for Updates...")
 			procAppendMenuW.Call(hMenu, MF_STRING, idCheckUpdate, uintptr(unsafe.Pointer(updText)))
 
@@ -304,6 +316,21 @@ func wndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 				openFile(cfg.ConfigPath)
 			} else {
 				openFile("config.yaml")
+			}
+
+		case idToggleAutoStart:
+			enabled := IsAutoStartEnabled()
+			newState := !enabled
+			if err := SetAutoStart(newState); err != nil {
+				titlePtr, _ := syscall.UTF16PtrFromString("Tally MCP Startup Settings")
+				msgPtr, _ := syscall.UTF16PtrFromString(fmt.Sprintf("Failed to update Windows startup settings: %v", err))
+				procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(msgPtr)), uintptr(unsafe.Pointer(titlePtr)), MB_OK|MB_ICONERROR)
+			} else {
+				if newState {
+					showTrayBalloon("Tally MCP Startup", "Tally MCP will automatically start when you log into Windows.")
+				} else {
+					showTrayBalloon("Tally MCP Startup", "Tally MCP will no longer start with Windows.")
+				}
 			}
 
 		case idCheckUpdate:

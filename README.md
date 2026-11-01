@@ -23,7 +23,8 @@ A high-performance, **self-updating Windows executable** written in Go that acts
 
 ## Key Features
 
-- ⚡ **Standalone Windows System Tray App**: Zero external runtime dependencies. Runs silently in the **Windows System Tray (Notification Area)** without an intrusive command prompt / cmd window. Right-click the tray icon to view status, open the web dashboard, edit `config.yaml`, check for updates, or exit. (Use `--no-tray` for headless/server mode).
+- ⚡ **Standalone Windows System Tray App**: Zero external runtime dependencies. Runs silently in the **Windows System Tray (Notification Area)** without an intrusive command prompt / cmd window. Right-click the tray icon to view status, open the web dashboard, edit `config.yaml`, toggle **Start with Windows**, check for updates, or exit. (Use `--no-tray` for headless/server mode).
+- 🚀 **Start with Windows**: Seamlessly runs on system startup with a single click from the System Tray menu (shows a checkmark when enabled) or via CLI (`--startup enable`). Stored cleanly in standard user registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`), requiring no admin elevation.
 - 🔄 **Automated Self-Updater**:
   - Automatically queries GitHub Releases for newer releases on startup.
   - Non-intrusive notification in console and via MCP tools.
@@ -163,6 +164,12 @@ The binary includes a robust updater designed specifically for Windows executabl
    - Immediately download and apply the update:
      ```cmd
      tally-mcp.exe --update
+     ```
+   - Manage automatic startup with Windows:
+     ```cmd
+     tally-mcp.exe --startup enable    # Start automatically on Windows boot
+     tally-mcp.exe --startup disable   # Disable automatic startup
+     tally-mcp.exe --startup status    # Check startup status
      ```
 
 ---

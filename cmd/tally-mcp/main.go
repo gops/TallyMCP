@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -45,6 +46,7 @@ func main() {
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	checkUpdateFlag := flag.Bool("check-update", false, "Check for newer GitHub releases and exit")
 	updateFlag := flag.Bool("update", false, "Download and apply the latest update, then exit")
+	startupFlag := flag.String("startup", "", "Configure startup with Windows: enable, disable, or status")
 	initConfigFlag := flag.Bool("init-config", false, "Generate a default config.yaml in the current directory and exit")
 
 	flag.Parse()
@@ -62,6 +64,31 @@ func main() {
 			log.Fatalf("[ERROR] Failed to write config file: %v", err)
 		}
 		fmt.Printf("Default configuration file successfully created at %s\n", target)
+		return
+	}
+
+	// Handle startup configuration
+	if *startupFlag != "" {
+		switch strings.ToLower(*startupFlag) {
+		case "enable", "on", "yes", "true":
+			if err := tray.SetAutoStart(true); err != nil {
+				log.Fatalf("[ERROR] Failed to enable startup: %v", err)
+			}
+			fmt.Println("Successfully enabled: Tally MCP will start automatically when Windows boots.")
+		case "disable", "off", "no", "false":
+			if err := tray.SetAutoStart(false); err != nil {
+				log.Fatalf("[ERROR] Failed to disable startup: %v", err)
+			}
+			fmt.Println("Successfully disabled: Tally MCP will no longer start with Windows.")
+		case "status", "check":
+			if tray.IsAutoStartEnabled() {
+				fmt.Println("Start with Windows: Enabled")
+			} else {
+				fmt.Println("Start with Windows: Disabled")
+			}
+		default:
+			log.Fatalf("Invalid -startup value '%s': choose enable, disable, or status", *startupFlag)
+		}
 		return
 	}
 
