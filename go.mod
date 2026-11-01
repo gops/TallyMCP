@@ -1,6 +1,6 @@
 module tally-mcp
 
-go 1.23
+go 1.24
 
 require (
 	github.com/mark3labs/mcp-go v1.5.0
