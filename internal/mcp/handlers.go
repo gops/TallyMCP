@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -128,6 +129,45 @@ func (h *ToolHandlers) HandleListVouchers(ctx context.Context, req mcp.CallToolR
 	}
 
 	jsonStr, err := tally.PrettyJSON(paginated)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(jsonStr), nil
+}
+
+// HandleGetVoucher queries full voucher details with ledger splits, inventory, and tax breakdown.
+func (h *ToolHandlers) HandleGetVoucher(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	masterID := req.GetString("master_id", "")
+	if masterID == "" {
+		if id := req.GetInt("master_id", 0); id > 0 {
+			masterID = strconv.Itoa(id)
+		}
+	}
+	voucherNo := req.GetString("voucher_no", "")
+	if voucherNo == "" {
+		voucherNo = req.GetString("voucher_number", "")
+	}
+	if voucherNo == "" {
+		if num := req.GetInt("voucher_no", 0); num > 0 {
+			voucherNo = strconv.Itoa(num)
+		} else if num := req.GetInt("voucher_number", 0); num > 0 {
+			voucherNo = strconv.Itoa(num)
+		}
+	}
+
+	if masterID == "" && voucherNo == "" {
+		return mcp.NewToolResultError("Either 'voucher_no' or 'master_id' is required to fetch voucher details."), nil
+	}
+
+	voucherType := req.GetString("voucher_type", "")
+	date := req.GetString("date", "")
+
+	detail, err := h.tallyClient.GetVoucher(ctx, masterID, voucherNo, voucherType, date)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get voucher: %v", err)), nil
+	}
+
+	jsonStr, err := tally.PrettyJSON(detail)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}

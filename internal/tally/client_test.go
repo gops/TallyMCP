@@ -231,3 +231,147 @@ func TestListVouchersPaginated(t *testing.T) {
 		t.Errorf("expected count=120, got %d", page5.Count)
 	}
 }
+
+func TestBuildGetVoucherXML(t *testing.T) {
+	xml1, err := tally.BuildGetVoucherXML("MyCompany", "1042", "", "", "")
+	if err != nil {
+		t.Fatalf("BuildGetVoucherXML failed: %v", err)
+	}
+	if !strings.Contains(xml1, "$MasterId = 1042") {
+		t.Errorf("expected $MasterId = 1042 in XML, got: %s", xml1)
+	}
+
+	xml2, err := tally.BuildGetVoucherXML("MyCompany", "", "INV-102", "Sales", "20240401")
+	if err != nil {
+		t.Fatalf("BuildGetVoucherXML failed: %v", err)
+	}
+	if !strings.Contains(xml2, `$VoucherNumber = "INV-102"`) {
+		t.Errorf("expected VoucherNumber filter in XML, got: %s", xml2)
+	}
+	if !strings.Contains(xml2, `$VoucherTypeName = "Sales"`) {
+		t.Errorf("expected VoucherTypeName filter in XML, got: %s", xml2)
+	}
+}
+
+func TestGetVoucher(t *testing.T) {
+	mockVoucherXML := `<ENVELOPE>
+  <HEADER><STATUS>1</STATUS></HEADER>
+  <BODY>
+    <DATA>
+      <COLLECTION>
+        <VOUCHER>
+          <DATE>20240401</DATE>
+          <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+          <VOUCHERNUMBER>INV-102</VOUCHERNUMBER>
+          <REFERENCE>PO-991</REFERENCE>
+          <PARTYLEDGERNAME>Acme Customer Ltd</PARTYLEDGERNAME>
+          <AMOUNT>-11800.00</AMOUNT>
+          <NARRATION>Being sales invoice #102 for 10 pcs Widget Pro</NARRATION>
+          <MASTERID>4512</MASTERID>
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>Acme Customer Ltd</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+            <AMOUNT>-11800.00</AMOUNT>
+            <BILLALLOCATIONS.LIST>
+              <NAME>INV-102</NAME>
+              <BILLTYPE>New Ref</BILLTYPE>
+              <AMOUNT>-11800.00</AMOUNT>
+            </BILLALLOCATIONS.LIST>
+          </ALLLEDGERENTRIES.LIST>
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>Sales Account</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+            <AMOUNT>10000.00</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>CGST</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+            <AMOUNT>900.00</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>SGST</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+            <AMOUNT>900.00</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>
+          <ALLINVENTORYENTRIES.LIST>
+            <STOCKITEMNAME>Widget Pro 100</STOCKITEMNAME>
+            <RATE>1000.00/pcs</RATE>
+            <ACTUALQTY>10 pcs</ACTUALQTY>
+            <BILLEDQTY>10 pcs</BILLEDQTY>
+            <AMOUNT>10000.00</AMOUNT>
+            <BATCHALLOCATIONS.LIST>
+              <GODOWNNAME>Main Warehouse</GODOWNNAME>
+              <BATCHNAME>Batch-A</BATCHNAME>
+              <AMOUNT>10000.00</AMOUNT>
+              <ACTUALQTY>10 pcs</ACTUALQTY>
+            </BATCHALLOCATIONS.LIST>
+          </ALLINVENTORYENTRIES.LIST>
+        </VOUCHER>
+      </COLLECTION>
+    </DATA>
+  </BODY>
+</ENVELOPE>`
+
+	client := tally.NewClient(config.TallyConfig{
+		URL: "http://mock-tally:9000",
+	})
+	client.SetTransport(roundTripFunc(func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/xml;charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader(mockVoucherXML)),
+		}
+	}))
+
+	ctx := context.Background()
+	detail, err := client.GetVoucher(ctx, "4512", "", "", "")
+	if err != nil {
+		t.Fatalf("GetVoucher failed: %v", err)
+	}
+
+	if detail.VoucherNumber != "INV-102" {
+		t.Errorf("expected VoucherNumber INV-102, got %s", detail.VoucherNumber)
+	}
+	if detail.MasterID != "4512" {
+		t.Errorf("expected MasterID 4512, got %s", detail.MasterID)
+	}
+	if detail.PartyLedgerName != "Acme Customer Ltd" {
+		t.Errorf("expected party ledger 'Acme Customer Ltd', got %s", detail.PartyLedgerName)
+	}
+	if detail.Narration != "Being sales invoice #102 for 10 pcs Widget Pro" {
+		t.Errorf("expected narration, got %s", detail.Narration)
+	}
+
+	// Verify ledger entries
+	if len(detail.LedgerEntries) != 4 {
+		t.Fatalf("expected 4 ledger entries, got %d", len(detail.LedgerEntries))
+	}
+	if len(detail.LedgerEntries[0].BillAllocations) != 1 {
+		t.Errorf("expected 1 bill allocation, got %d", len(detail.LedgerEntries[0].BillAllocations))
+	} else if detail.LedgerEntries[0].BillAllocations[0].Name != "INV-102" {
+		t.Errorf("expected bill allocation name 'INV-102', got %s", detail.LedgerEntries[0].BillAllocations[0].Name)
+	}
+
+	// Verify inventory entries
+	if len(detail.InventoryEntries) != 1 {
+		t.Fatalf("expected 1 inventory entry, got %d", len(detail.InventoryEntries))
+	}
+	inv := detail.InventoryEntries[0]
+	if inv.StockItemName != "Widget Pro 100" || inv.BilledQty != "10 pcs" || inv.Amount != 10000 {
+		t.Errorf("unexpected inventory item: %+v", inv)
+	}
+	if len(inv.BatchAllocations) != 1 || inv.BatchAllocations[0].GodownName != "Main Warehouse" {
+		t.Errorf("unexpected batch allocation: %+v", inv.BatchAllocations)
+	}
+
+	// Verify automatic tax breakdown
+	if len(detail.Taxes) != 2 {
+		t.Fatalf("expected 2 taxes (CGST, SGST), got %d", len(detail.Taxes))
+	}
+	if detail.Taxes[0].LedgerName != "CGST" || detail.Taxes[0].Amount != 900 {
+		t.Errorf("unexpected CGST tax: %+v", detail.Taxes[0])
+	}
+	if detail.Taxes[1].LedgerName != "SGST" || detail.Taxes[1].Amount != 900 {
+		t.Errorf("unexpected SGST tax: %+v", detail.Taxes[1])
+	}
+}

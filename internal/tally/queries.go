@@ -3,6 +3,7 @@ package tally
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"text/template"
 )
 
@@ -132,6 +133,34 @@ const listVouchersTemplate = `<ENVELOPE>
   </BODY>
 </ENVELOPE>`
 
+const getVoucherTemplate = `<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>SingleVoucherColl</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
+        {{if .Date}}<SVFROMDATE>{{.Date}}</SVFROMDATE><SVTODATE>{{.Date}}</SVTODATE>{{end}}
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="SingleVoucherColl" ISMODIFY="No">
+            <TYPE>Voucher</TYPE>
+            <FILTER>VoucherFilter</FILTER>
+            <FETCH>Date, EffectiveDate, VoucherTypeName, VoucherNumber, Reference, ReferenceDate, PartyLedgerName, PartyName, Amount, Narration, MasterId, Guid, AllLedgerEntries.List.*, LedgerEntries.List.*, AllLedgerEntries.BillAllocations.List.*, AllLedgerEntries.BankAllocations.List.*, AllInventoryEntries.List.*, InventoryEntries.List.*, AllInventoryEntries.BatchAllocations.List.*, AllInventoryEntries.AccountingAllocations.List.*</FETCH>
+          </COLLECTION>
+          <SYSTEM TYPE="Formulae" NAME="VoucherFilter">{{if .MasterID}}$MasterId = {{.MasterID}}{{else if .VoucherNumber}}$VoucherNumber = "{{.VoucherNumber}}"{{if .VoucherType}} AND $VoucherTypeName = "{{.VoucherType}}"{{end}}{{end}}</SYSTEM>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>`
+
 const trialBalanceTemplate = `<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
@@ -224,6 +253,17 @@ func BuildListVouchersXML(company, voucherType, fromDate, toDate string) (string
 		"VoucherType": voucherType,
 		"FromDate":    fromDate,
 		"ToDate":      toDate,
+	})
+}
+
+// BuildGetVoucherXML generates the XML for exporting a single voucher drilldown.
+func BuildGetVoucherXML(company, masterID, voucherNumber, voucherType, date string) (string, error) {
+	return executeTemplate("getVoucher", getVoucherTemplate, map[string]string{
+		"Company":       company,
+		"MasterID":      strings.TrimSpace(masterID),
+		"VoucherNumber": strings.TrimSpace(voucherNumber),
+		"VoucherType":   strings.TrimSpace(voucherType),
+		"Date":          strings.TrimSpace(date),
 	})
 }
 

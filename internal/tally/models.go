@@ -118,6 +118,84 @@ type LedgerEntryRecord struct {
 	IsDeemedPositive string `xml:"ISDEEMEDPOSITIVE,omitempty" json:"is_deemed_positive,omitempty"`
 }
 
+// VoucherDetail represents a full voucher drilldown with complete accounting and inventory splits.
+type VoucherDetail struct {
+	MasterID             string                  `xml:"MASTERID,omitempty" json:"master_id,omitempty"`
+	VoucherTypeName      string                  `xml:"VOUCHERTYPENAME" json:"voucher_type"`
+	VoucherNumber        string                  `xml:"VOUCHERNUMBER" json:"voucher_number"`
+	Date                 string                  `xml:"DATE" json:"date"`
+	EffectiveDate        string                  `xml:"EFFECTIVEDATE,omitempty" json:"effective_date,omitempty"`
+	Reference            string                  `xml:"REFERENCE,omitempty" json:"reference,omitempty"`
+	ReferenceDate        string                  `xml:"REFERENCEDATE,omitempty" json:"reference_date,omitempty"`
+	PartyLedgerName      string                  `xml:"PARTYLEDGERNAME,omitempty" json:"party_ledger_name,omitempty"`
+	PartyName            string                  `xml:"PARTYNAME,omitempty" json:"party_name,omitempty"`
+	Amount               float64                 `xml:"AMOUNT" json:"amount"`
+	Narration            string                  `xml:"NARRATION,omitempty" json:"narration,omitempty"`
+	Guid                 string                  `xml:"GUID,omitempty" json:"guid,omitempty"`
+	AllLedgerEntries     []VoucherLedgerEntry    `xml:"ALLLEDGERENTRIES.LIST" json:"-"`
+	LedgerEntriesList    []VoucherLedgerEntry    `xml:"LEDGERENTRIES.LIST" json:"-"`
+	LedgerEntries        []VoucherLedgerEntry    `xml:"-" json:"ledger_entries,omitempty"`
+	AllInventoryEntries  []VoucherInventoryEntry `xml:"ALLINVENTORYENTRIES.LIST" json:"-"`
+	InventoryEntriesList []VoucherInventoryEntry `xml:"INVENTORYENTRIES.LIST" json:"-"`
+	InventoryEntries     []VoucherInventoryEntry `xml:"-" json:"inventory_entries,omitempty"`
+	Taxes                []TaxSummary            `xml:"-" json:"taxes,omitempty"`
+}
+
+// VoucherLedgerEntry represents an individual debit or credit leg of a voucher.
+type VoucherLedgerEntry struct {
+	LedgerName         string           `xml:"LEDGERNAME" json:"ledger_name"`
+	Amount             float64          `xml:"AMOUNT" json:"amount"`
+	IsDeemedPositive   string           `xml:"ISDEEMEDPOSITIVE,omitempty" json:"is_deemed_positive,omitempty"`
+	BillAllocations    []BillAllocation `xml:"BILLALLOCATIONS.LIST" json:"bill_allocations,omitempty"`
+	BillAllocationsAlt []BillAllocation `xml:"BILLALLOCATIONS" json:"-"`
+	BankAllocations    []BankAllocation `xml:"BANKALLOCATIONS.LIST" json:"bank_allocations,omitempty"`
+	BankAllocationsAlt []BankAllocation `xml:"BANKALLOCATIONS" json:"-"`
+}
+
+// BillAllocation represents invoice reference tracking (New Ref, Agst Ref, Advance, On Account).
+type BillAllocation struct {
+	Name     string  `xml:"NAME" json:"name"`
+	BillType string  `xml:"BILLTYPE" json:"bill_type"`
+	Amount   float64 `xml:"AMOUNT" json:"amount"`
+}
+
+// BankAllocation represents banking/cheque/e-transfer payment particulars.
+type BankAllocation struct {
+	PaymentFavouring string  `xml:"PAYMENTFAVOURING,omitempty" json:"payment_favouring,omitempty"`
+	TransactionType  string  `xml:"TRANSACTIONTYPE,omitempty" json:"transaction_type,omitempty"`
+	InstrumentNumber string  `xml:"INSTRUMENTNUMBER,omitempty" json:"instrument_number,omitempty"`
+	InstrumentDate   string  `xml:"INSTRUMENTDATE,omitempty" json:"instrument_date,omitempty"`
+	Amount           float64 `xml:"AMOUNT,omitempty" json:"amount,omitempty"`
+}
+
+// VoucherInventoryEntry represents a stock line item in a sales or purchase invoice.
+type VoucherInventoryEntry struct {
+	StockItemName         string                `xml:"STOCKITEMNAME" json:"stock_item_name"`
+	Rate                  string                `xml:"RATE,omitempty" json:"rate,omitempty"`
+	BilledQty             string                `xml:"BILLEDQTY,omitempty" json:"billed_qty,omitempty"`
+	ActualQty             string                `xml:"ACTUALQTY,omitempty" json:"actual_qty,omitempty"`
+	Amount                float64               `xml:"AMOUNT" json:"amount"`
+	Discount              string                `xml:"DISCOUNT,omitempty" json:"discount,omitempty"`
+	BatchAllocations      []BatchAllocation     `xml:"BATCHALLOCATIONS.LIST" json:"batch_allocations,omitempty"`
+	BatchAllocationsAlt   []BatchAllocation     `xml:"BATCHALLOCATIONS" json:"-"`
+	AccountingAllocations []VoucherLedgerEntry `xml:"ACCOUNTINGALLOCATIONS.LIST" json:"accounting_allocations,omitempty"`
+}
+
+// BatchAllocation represents warehouse godown and batch allocations for inventory.
+type BatchAllocation struct {
+	GodownName string  `xml:"GODOWNNAME,omitempty" json:"godown_name,omitempty"`
+	BatchName  string  `xml:"BATCHNAME,omitempty" json:"batch_name,omitempty"`
+	Amount     float64 `xml:"AMOUNT,omitempty" json:"amount,omitempty"`
+	ActualQty  string  `xml:"ACTUALQTY,omitempty" json:"actual_qty,omitempty"`
+	BilledQty  string  `xml:"BILLEDQTY,omitempty" json:"billed_qty,omitempty"`
+}
+
+// TaxSummary summarizes GST and duties extracted from voucher legs.
+type TaxSummary struct {
+	LedgerName string  `json:"ledger_name"`
+	Amount     float64 `json:"amount"`
+}
+
 // ServerStatus reports the status of Tally ERP connection.
 type ServerStatus struct {
 	Connected      bool          `json:"connected"`

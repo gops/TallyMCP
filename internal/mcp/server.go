@@ -99,6 +99,18 @@ func (s *Server) registerTools() {
 		s.handlers.HandleListVouchers,
 	)
 
+	// tally_get_voucher
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_voucher",
+			mcp.WithDescription("Get full details and drilldown for a specific voucher by master_id or voucher_no (including all debit/credit ledger splits, inventory quantities, tax breakdown like CGST/SGST/IGST, and bill/bank allocations)."),
+			mcp.WithString("voucher_no", mcp.Description("Voucher number / invoice number to look up (e.g. '102', 'INV-2024-001')")),
+			mcp.WithString("master_id", mcp.Description("Tally internal Master ID of the voucher (e.g. '1042')")),
+			mcp.WithString("voucher_type", mcp.Description("Optional voucher type to disambiguate when voucher numbers repeat across types (e.g. 'Sales', 'Purchase', 'Payment', 'Receipt')")),
+			mcp.WithString("date", mcp.Description("Optional voucher date in YYYYMMDD format to narrow down search")),
+		),
+		s.handlers.HandleGetVoucher,
+	)
+
 	// 6. tally_get_stock_summary
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_get_stock_summary",

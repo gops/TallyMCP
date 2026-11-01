@@ -341,6 +341,104 @@ func (c *Client) ListVouchersPaginated(ctx context.Context, voucherType, fromDat
 	}, nil
 }
 
+// GetVoucher retrieves full voucher details with debit/credit ledger splits, inventory entries, and tax breakdown.
+func (c *Client) GetVoucher(ctx context.Context, masterID, voucherNo, voucherType, date string) (*VoucherDetail, error) {
+	xmlQuery, err := BuildGetVoucherXML(c.defaultCompany, masterID, voucherNo, voucherType, date)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := c.ExecuteRawXML(ctx, xmlQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	var env struct {
+		XMLName xml.Name `xml:"ENVELOPE"`
+		Body    struct {
+			Data struct {
+				TallyMessages []struct {
+					Voucher *VoucherDetail `xml:"VOUCHER"`
+				} `xml:"TALLYMESSAGE"`
+				Vouchers []VoucherDetail `xml:"VOUCHER"`
+				Collection struct {
+					Vouchers []VoucherDetail `xml:"VOUCHER"`
+				} `xml:"COLLECTION"`
+			} `xml:"DATA"`
+		} `xml:"BODY"`
+	}
+
+	if err := xml.Unmarshal(raw, &env); err != nil {
+		return nil, fmt.Errorf("unmarshaling voucher XML: %w", err)
+	}
+
+	var vouchers []VoucherDetail
+	for _, msg := range env.Body.Data.TallyMessages {
+		if msg.Voucher != nil && (msg.Voucher.VoucherTypeName != "" || msg.Voucher.VoucherNumber != "" || msg.Voucher.MasterID != "") {
+			vouchers = append(vouchers, *msg.Voucher)
+		}
+	}
+	if len(vouchers) == 0 && len(env.Body.Data.Vouchers) > 0 {
+		vouchers = env.Body.Data.Vouchers
+	}
+	if len(vouchers) == 0 && len(env.Body.Data.Collection.Vouchers) > 0 {
+		vouchers = env.Body.Data.Collection.Vouchers
+	}
+
+	if len(vouchers) == 0 {
+		ident := voucherNo
+		if ident == "" {
+			ident = masterID
+		}
+		return nil, fmt.Errorf("voucher not found for identifier %q", ident)
+	}
+
+	v := vouchers[0]
+	// Normalize ledger entries
+	if len(v.LedgerEntries) == 0 {
+		if len(v.AllLedgerEntries) > 0 {
+			v.LedgerEntries = v.AllLedgerEntries
+		} else if len(v.LedgerEntriesList) > 0 {
+			v.LedgerEntries = v.LedgerEntriesList
+		}
+	}
+	for i := range v.LedgerEntries {
+		if len(v.LedgerEntries[i].BillAllocations) == 0 && len(v.LedgerEntries[i].BillAllocationsAlt) > 0 {
+			v.LedgerEntries[i].BillAllocations = v.LedgerEntries[i].BillAllocationsAlt
+		}
+		if len(v.LedgerEntries[i].BankAllocations) == 0 && len(v.LedgerEntries[i].BankAllocationsAlt) > 0 {
+			v.LedgerEntries[i].BankAllocations = v.LedgerEntries[i].BankAllocationsAlt
+		}
+	}
+
+	// Normalize inventory entries
+	if len(v.InventoryEntries) == 0 {
+		if len(v.AllInventoryEntries) > 0 {
+			v.InventoryEntries = v.AllInventoryEntries
+		} else if len(v.InventoryEntriesList) > 0 {
+			v.InventoryEntries = v.InventoryEntriesList
+		}
+	}
+	for i := range v.InventoryEntries {
+		if len(v.InventoryEntries[i].BatchAllocations) == 0 && len(v.InventoryEntries[i].BatchAllocationsAlt) > 0 {
+			v.InventoryEntries[i].BatchAllocations = v.InventoryEntries[i].BatchAllocationsAlt
+		}
+	}
+
+	// Automatically extract tax breakdown for convenience
+	for _, leg := range v.LedgerEntries {
+		upper := strings.ToUpper(leg.LedgerName)
+		if strings.Contains(upper, "GST") || strings.Contains(upper, "TAX") || strings.Contains(upper, "TDS") || strings.Contains(upper, "TCS") || strings.Contains(upper, "CESS") {
+			v.Taxes = append(v.Taxes, TaxSummary{
+				LedgerName: leg.LedgerName,
+				Amount:     leg.Amount,
+			})
+		}
+	}
+
+	return &v, nil
+}
+
 // GetTrialBalance retrieves the Trial Balance report formatted as structured JSON.
 func (c *Client) GetTrialBalance(ctx context.Context, fromDate, toDate string) (map[string]any, error) {
 	xmlQuery, err := BuildTrialBalanceXML(c.defaultCompany, fromDate, toDate)
