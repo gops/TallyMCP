@@ -38,7 +38,7 @@ auth:
 
 updater:
   # GitHub repository coordinates to check for new releases (owner/repo)
-  github_repo: "owner/tally-mcp"
+  github_repo: "gops/TallyMCP"
 
   # Automatically check for updates on application startup (prints notification in console)
   check_on_startup: true

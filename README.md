@@ -1,8 +1,8 @@
 # Tally MCP Server (Model Context Protocol)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Go Report Card](https://goreportcard.com/badge/github.com/owner/tally-mcp)](https://goreportcard.com/report/github.com/owner/tally-mcp)
-[![Release](https://img.shields.io/github/v/release/owner/tally-mcp)](https://github.com/owner/tally-mcp/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/gops/TallyMCP)](https://goreportcard.com/report/github.com/gops/TallyMCP)
+[![Release](https://img.shields.io/github/v/release/gops/TallyMCP)](https://github.com/gops/TallyMCP/releases)
 
 > [!WARNING]
 > **Disclaimer**: This is AI-generated code and can have errors or mistakes. Use at your own risk. Always verify and test thoroughly before running against production Tally accounting data.
@@ -67,7 +67,7 @@ Before starting `tally-mcp.exe`, enable the HTTP Server in Tally:
 ## 2. Installation & Running
 
 ### Option A: Download Pre-compiled Binary (Recommended)
-1. Go to **[Releases](https://github.com/owner/tally-mcp/releases)** on GitHub.
+1. Go to **[Releases](https://github.com/gops/TallyMCP/releases)** on GitHub.
 2. Download `tally-mcp-windows-amd64.zip` (or `.exe`).
 3. Extract to any folder on the Windows PC (e.g. `C:\TallyMCP\`).
 4. Double-click `tally-mcp.exe` or run from PowerShell / Command Prompt:
@@ -88,7 +88,7 @@ Upon first launch, `tally-mcp.exe` automatically generates a commented `config.y
   • Listen Address: 0.0.0.0:8080
   • Config File:    config.yaml
   • Auth Security:  Disabled (Open LAN access)
-  • GitHub Repo:    owner/tally-mcp
+  • GitHub Repo:    gops/TallyMCP
 
   LAN MCP SSE Endpoints:
     -> http://192.168.1.50:8080/sse
@@ -191,7 +191,7 @@ auth:
 
 updater:
   # Your GitHub repository (owner/repo) hosting the releases
-  github_repo: "owner/tally-mcp"
+  github_repo: "gops/TallyMCP"
   # Check for new version when the server starts
   check_on_startup: true
   # Automatically download and install new version on startup
@@ -235,7 +235,7 @@ Requirements: [Go 1.22+](https://go.dev/)
 
 ```bash
 # Clone the repository
-git clone https://github.com/owner/tally-mcp.git
+git clone https://github.com/gops/TallyMCP.git
 cd tally-mcp
 
 # Run unit tests

@@ -76,7 +76,7 @@ func DefaultConfig() *Config {
 			APIKey:  "",
 		},
 		Updater: UpdaterConfig{
-			GitHubRepo:     "owner/tally-mcp",
+			GitHubRepo:     "gops/TallyMCP",
 			CheckOnStartup: true,
 			AutoApply:      false,
 		},
@@ -180,7 +180,7 @@ auth:
 
 updater:
   # GitHub repository coordinates to check for new releases (owner/repo)
-  github_repo: "owner/tally-mcp"
+  github_repo: "gops/TallyMCP"
   # Check for new version on application startup
   check_on_startup: true
   # Automatically apply updates if a new version is detected
