@@ -66,23 +66,30 @@ func (h *ToolHandlers) HandleListCompanies(ctx context.Context, req mcp.CallTool
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to list companies: %v", err)), nil
 	}
 
-	jsonStr, err := tally.PrettyJSON(companies)
+	jsonStr, err := tally.CompactJSON(companies)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return mcp.NewToolResultText(jsonStr), nil
 }
 
-// HandleListLedgers lists accounts/ledgers with optional group filter.
+// HandleListLedgers lists accounts/ledgers with optional group filter, search query, pagination, and compact mode.
 func (h *ToolHandlers) HandleListLedgers(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	group := req.GetString("group", "")
+	search := req.GetString("search", "")
+	limit := req.GetInt("limit", 50)
+	offset := req.GetInt("offset", 0)
+	summaryOnly := req.GetBool("summary_only", false)
+	if !summaryOnly {
+		summaryOnly = req.GetBool("compact", false)
+	}
 
-	ledgers, err := h.tallyClient.ListLedgers(ctx, group)
+	paginated, err := h.tallyClient.FilterLedgers(ctx, group, search, limit, offset, summaryOnly)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to fetch ledgers: %v", err)), nil
 	}
 
-	jsonStr, err := tally.PrettyJSON(ledgers)
+	jsonStr, err := tally.CompactJSON(paginated)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -101,23 +108,30 @@ func (h *ToolHandlers) HandleGetLedger(ctx context.Context, req mcp.CallToolRequ
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ledger %q: %v", name, err)), nil
 	}
 
-	jsonStr, err := tally.PrettyJSON(details)
+	jsonStr, err := tally.CompactJSON(details)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return mcp.NewToolResultText(jsonStr), nil
 }
 
-// HandleListStockItems lists stock items from Tally inventory.
+// HandleListStockItems lists stock items from Tally inventory with optional group filter, search query, pagination, and compact mode.
 func (h *ToolHandlers) HandleListStockItems(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	group := req.GetString("group", "")
+	search := req.GetString("search", "")
+	limit := req.GetInt("limit", 50)
+	offset := req.GetInt("offset", 0)
+	summaryOnly := req.GetBool("summary_only", false)
+	if !summaryOnly {
+		summaryOnly = req.GetBool("compact", false)
+	}
 
-	items, err := h.tallyClient.ListStockItems(ctx, group)
+	paginated, err := h.tallyClient.FilterStockItems(ctx, group, search, limit, offset, summaryOnly)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to list stock items: %v", err)), nil
 	}
 
-	jsonStr, err := tally.PrettyJSON(items)
+	jsonStr, err := tally.CompactJSON(paginated)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -137,7 +151,7 @@ func (h *ToolHandlers) HandleListVouchers(ctx context.Context, req mcp.CallToolR
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to list vouchers: %v", err)), nil
 	}
 
-	jsonStr, err := tally.PrettyJSON(paginated)
+	jsonStr, err := tally.CompactJSON(paginated)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -176,7 +190,7 @@ func (h *ToolHandlers) HandleGetVoucher(ctx context.Context, req mcp.CallToolReq
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get voucher: %v", err)), nil
 	}
 
-	jsonStr, err := tally.PrettyJSON(detail)
+	jsonStr, err := tally.CompactJSON(detail)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -193,7 +207,7 @@ func (h *ToolHandlers) HandleGetTrialBalance(ctx context.Context, req mcp.CallTo
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get trial balance: %v", err)), nil
 	}
 
-	jsonStr, err := tally.PrettyJSON(tb)
+	jsonStr, err := tally.CompactJSON(tb)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -210,7 +224,7 @@ func (h *ToolHandlers) HandleGetProfitAndLoss(ctx context.Context, req mcp.CallT
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get profit and loss: %v", err)), nil
 	}
 
-	jsonStr, err := tally.PrettyJSON(pl)
+	jsonStr, err := tally.CompactJSON(pl)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -233,7 +247,30 @@ func (h *ToolHandlers) HandleGetBalanceSheet(ctx context.Context, req mcp.CallTo
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get balance sheet: %v", err)), nil
 	}
 
-	jsonStr, err := tally.PrettyJSON(bs)
+	jsonStr, err := tally.CompactJSON(bs)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(jsonStr), nil
+}
+
+// HandleGetFinancialSummary returns an executive snapshot of key financial metrics (Cash/Bank, Receivables, Payables, Top Debtors/Creditors, Working Capital) in < 350 tokens.
+func (h *ToolHandlers) HandleGetFinancialSummary(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	asOnDate := req.GetString("as_on_date", "")
+	if asOnDate == "" {
+		asOnDate = req.GetString("to_date", "")
+	}
+	if asOnDate == "" {
+		asOnDate = req.GetString("date", "")
+	}
+	fromDate := req.GetString("from_date", "")
+
+	summary, err := h.tallyClient.GetFinancialSummary(ctx, asOnDate, fromDate)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to generate financial summary: %v", err)), nil
+	}
+
+	jsonStr, err := tally.CompactJSON(summary)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -257,7 +294,7 @@ func (h *ToolHandlers) HandleGetOutstandingReceivables(ctx context.Context, req 
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get outstanding receivables: %v", err)), nil
 	}
 
-	jsonStr, err := tally.PrettyJSON(recv)
+	jsonStr, err := tally.CompactJSON(recv)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -281,7 +318,7 @@ func (h *ToolHandlers) HandleGetOutstandingPayables(ctx context.Context, req mcp
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get outstanding payables: %v", err)), nil
 	}
 
-	jsonStr, err := tally.PrettyJSON(pay)
+	jsonStr, err := tally.CompactJSON(pay)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -300,7 +337,7 @@ func (h *ToolHandlers) HandleGetDayBook(ctx context.Context, req mcp.CallToolReq
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get day book: %v", err)), nil
 	}
 
-	jsonStr, err := tally.PrettyJSON(db)
+	jsonStr, err := tally.CompactJSON(db)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}

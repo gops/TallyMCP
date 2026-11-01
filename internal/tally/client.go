@@ -7,9 +7,11 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +26,7 @@ type Client struct {
 	querySem         chan struct{} // Capacity 1: guarantees strictly 1 query executing at any time (no parallel queries to Tally)
 	queueSem         chan struct{} // Capacity MaxQueueSize: buffers incoming queries before dropping/rejecting
 	throttleDuration time.Duration // Cooldown sleep between consecutive queries
+	cache            *MemoryCache  // In-memory TTL cache for instant lookup of static/master data
 }
 
 // NewClient creates a new Tally XML Client.
@@ -48,6 +51,11 @@ func NewClient(cfg config.TallyConfig) *Client {
 		throttleMs = 15
 	}
 
+	cacheTTL := time.Duration(cfg.CacheTTLSeconds) * time.Second
+	if cacheTTL <= 0 {
+		cacheTTL = 30 * time.Second
+	}
+
 	return &Client{
 		baseURL: url,
 		httpClient: &http.Client{
@@ -57,12 +65,25 @@ func NewClient(cfg config.TallyConfig) *Client {
 		querySem:         make(chan struct{}, 1),
 		queueSem:         make(chan struct{}, maxQueueSize),
 		throttleDuration: time.Duration(throttleMs) * time.Millisecond,
+		cache:            NewMemoryCache(cacheTTL),
 	}
 }
 
 // SetTransport allows injecting a custom RoundTripper (useful for testing and proxies).
 func (c *Client) SetTransport(rt http.RoundTripper) {
 	c.httpClient.Transport = rt
+}
+
+// Cache returns the internal MemoryCache instance.
+func (c *Client) Cache() *MemoryCache {
+	return c.cache
+}
+
+// InvalidateCache clears cached entries matching prefix (or all entries if prefix is empty).
+func (c *Client) InvalidateCache(prefix string) {
+	if c.cache != nil {
+		c.cache.Invalidate(prefix)
+	}
 }
 
 // BaseURL returns the configured Tally endpoint.
@@ -89,6 +110,10 @@ func (c *Client) IsBusy() bool {
 // It guarantees serial execution (no parallel queries) to prevent overloading Tally ERP / TallyPrime,
 // buffering concurrent queries in a bounded queue up to MaxQueueSize.
 func (c *Client) ExecuteRawXML(ctx context.Context, xmlContent string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// Step 1: Request a slot in the incoming query buffer
 	select {
 	case c.queueSem <- struct{}{}:
@@ -167,6 +192,15 @@ func (c *Client) Ping(ctx context.Context) (*ServerStatus, error) {
 
 // ListCompanies fetches all companies currently loaded in Tally.
 func (c *Client) ListCompanies(ctx context.Context) ([]CompanyItem, error) {
+	cacheKey := "companies:" + c.baseURL
+	if c.cache != nil {
+		if cached, ok := c.cache.Get(cacheKey); ok {
+			if companies, ok := cached.([]CompanyItem); ok {
+				return companies, nil
+			}
+		}
+	}
+
 	xmlQuery := BuildListCompaniesXML()
 	raw, err := c.ExecuteRawXML(ctx, xmlQuery)
 	if err != nil {
@@ -195,11 +229,24 @@ func (c *Client) ListCompanies(ctx context.Context) ([]CompanyItem, error) {
 		companies = env.Body.Data.Collection.Companies
 	}
 
+	if c.cache != nil && len(companies) > 0 {
+		c.cache.Set(cacheKey, companies)
+	}
+
 	return companies, nil
 }
 
 // ListLedgers fetches ledgers from Tally, optionally filtered by parent group (e.g. "Sundry Debtors", "Bank Accounts").
 func (c *Client) ListLedgers(ctx context.Context, group string) ([]LedgerItem, error) {
+	cacheKey := fmt.Sprintf("ledgers:%s:%s", c.defaultCompany, strings.ToLower(strings.TrimSpace(group)))
+	if c.cache != nil {
+		if cached, ok := c.cache.Get(cacheKey); ok {
+			if ledgers, ok := cached.([]LedgerItem); ok {
+				return ledgers, nil
+			}
+		}
+	}
+
 	xmlQuery, err := BuildListLedgersXML(c.defaultCompany, group)
 	if err != nil {
 		return nil, err
@@ -242,7 +289,95 @@ func (c *Client) ListLedgers(ctx context.Context, group string) ([]LedgerItem, e
 		result = env.Body.Data.Collection.Ledgers
 	}
 
+	for i := range result {
+		if result[i].Parent == "" && result[i].ParentAttr != "" {
+			result[i].Parent = result[i].ParentAttr
+		}
+	}
+
+	if c.cache != nil && len(result) > 0 {
+		c.cache.Set(cacheKey, result)
+	}
+
 	return result, nil
+}
+
+// FilterLedgers queries ledgers, applies case-insensitive substring search across name/parent/state, and returns paginated ledgers with optional compact projection.
+func (c *Client) FilterLedgers(ctx context.Context, group, search string, limit, offset int, summaryOnly bool) (*PaginatedLedgers, error) {
+	allLedgers, err := c.ListLedgers(ctx, group)
+	if err != nil {
+		return nil, err
+	}
+
+	search = strings.TrimSpace(strings.ToLower(search))
+	var filtered []LedgerItem
+	if search == "" {
+		filtered = allLedgers
+	} else {
+		for _, l := range allLedgers {
+			if strings.Contains(strings.ToLower(l.Name), search) ||
+				strings.Contains(strings.ToLower(l.Parent), search) ||
+				strings.Contains(strings.ToLower(l.State), search) {
+				filtered = append(filtered, l)
+			}
+		}
+	}
+
+	total := len(filtered)
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 250 {
+		limit = 250
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var pagedSlice []LedgerItem
+	var nextOffset *int
+	var hasMore bool
+
+	if offset < total {
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		pagedSlice = filtered[offset:end]
+		if end < total {
+			hasMore = true
+			nextVal := end
+			nextOffset = &nextVal
+		}
+	} else {
+		pagedSlice = []LedgerItem{}
+	}
+
+	var payload any
+	if summaryOnly {
+		compact := make([]CompactLedgerItem, len(pagedSlice))
+		for i, l := range pagedSlice {
+			compact[i] = CompactLedgerItem{
+				Name:           l.Name,
+				Parent:         l.Parent,
+				ClosingBalance: l.ClosingBalance,
+				State:          l.State,
+			}
+		}
+		payload = compact
+	} else {
+		payload = pagedSlice
+	}
+
+	return &PaginatedLedgers{
+		Total:      total,
+		Count:      len(pagedSlice),
+		Offset:     offset,
+		Limit:      limit,
+		HasMore:    hasMore,
+		NextOffset: nextOffset,
+		Ledgers:    payload,
+	}, nil
 }
 
 // GetLedger retrieves detailed information for a single ledger.
@@ -262,6 +397,15 @@ func (c *Client) GetLedger(ctx context.Context, ledgerName string) (map[string]a
 
 // ListStockItems retrieves inventory items from Tally.
 func (c *Client) ListStockItems(ctx context.Context, group string) ([]StockItemModel, error) {
+	cacheKey := fmt.Sprintf("stock_items:%s:%s", c.defaultCompany, strings.ToLower(strings.TrimSpace(group)))
+	if c.cache != nil {
+		if cached, ok := c.cache.Get(cacheKey); ok {
+			if items, ok := cached.([]StockItemModel); ok {
+				return items, nil
+			}
+		}
+	}
+
 	xmlQuery, err := BuildListStockItemsXML(c.defaultCompany, group)
 	if err != nil {
 		return nil, err
@@ -304,7 +448,94 @@ func (c *Client) ListStockItems(ctx context.Context, group string) ([]StockItemM
 		result = env.Body.Data.Collection.StockItems
 	}
 
+	for i := range result {
+		if result[i].Parent == "" && result[i].ParentAttr != "" {
+			result[i].Parent = result[i].ParentAttr
+		}
+	}
+
+	if c.cache != nil && len(result) > 0 {
+		c.cache.Set(cacheKey, result)
+	}
+
 	return result, nil
+}
+
+// FilterStockItems queries inventory items, applies case-insensitive substring search, and returns paginated items with optional compact projection.
+func (c *Client) FilterStockItems(ctx context.Context, group, search string, limit, offset int, summaryOnly bool) (*PaginatedStockItems, error) {
+	allItems, err := c.ListStockItems(ctx, group)
+	if err != nil {
+		return nil, err
+	}
+
+	search = strings.TrimSpace(strings.ToLower(search))
+	var filtered []StockItemModel
+	if search == "" {
+		filtered = allItems
+	} else {
+		for _, item := range allItems {
+			if strings.Contains(strings.ToLower(item.Name), search) ||
+				strings.Contains(strings.ToLower(item.Parent), search) {
+				filtered = append(filtered, item)
+			}
+		}
+	}
+
+	total := len(filtered)
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 250 {
+		limit = 250
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var pagedSlice []StockItemModel
+	var nextOffset *int
+	var hasMore bool
+
+	if offset < total {
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		pagedSlice = filtered[offset:end]
+		if end < total {
+			hasMore = true
+			nextVal := end
+			nextOffset = &nextVal
+		}
+	} else {
+		pagedSlice = []StockItemModel{}
+	}
+
+	var payload any
+	if summaryOnly {
+		compact := make([]CompactStockItem, len(pagedSlice))
+		for i, item := range pagedSlice {
+			compact[i] = CompactStockItem{
+				Name:           item.Name,
+				Parent:         item.Parent,
+				ClosingBalance: item.ClosingBalance,
+				ClosingValue:   item.ClosingValue,
+			}
+		}
+		payload = compact
+	} else {
+		payload = pagedSlice
+	}
+
+	return &PaginatedStockItems{
+		Total:      total,
+		Count:      len(pagedSlice),
+		Offset:     offset,
+		Limit:      limit,
+		HasMore:    hasMore,
+		NextOffset: nextOffset,
+		StockItems: payload,
+	}, nil
 }
 
 // ListVouchers fetches vouchers with optional type, fromDate, and toDate (YYYYMMDD format).
@@ -602,7 +833,98 @@ func (c *Client) CreateLedger(ctx context.Context, name, parent string, openingB
 		return "", err
 	}
 
+	// Invalidate ledger cache so subsequent queries reflect newly created ledgers
+	c.InvalidateCache("ledgers:")
+
 	return string(raw), nil
+}
+
+// GetFinancialSummary compiles an executive financial KPI snapshot in < 350 tokens,
+// returning cash/bank balances, receivables, payables, top debtors/creditors, and working capital.
+func (c *Client) GetFinancialSummary(ctx context.Context, asOnDate, fromDate string) (*FinancialSummary, error) {
+	if asOnDate == "" {
+		asOnDate = time.Now().Format("20060102")
+	}
+
+	ledgers, err := c.ListLedgers(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("fetching ledgers for financial summary: %w", err)
+	}
+
+	var cashAndBank, totalReceivable, totalPayable float64
+	var revenueYTD, expensesYTD float64
+	var debtors, creditors []PartyBalance
+
+	for _, l := range ledgers {
+		parent := strings.ToLower(l.Parent)
+		absBal := math.Abs(l.ClosingBalance)
+
+		if strings.Contains(parent, "bank") || strings.Contains(parent, "cash") {
+			cashAndBank += absBal
+		} else if strings.Contains(parent, "debtor") {
+			if absBal > 0 {
+				totalReceivable += absBal
+				debtors = append(debtors, PartyBalance{Name: l.Name, Balance: absBal})
+			}
+		} else if strings.Contains(parent, "creditor") {
+			if absBal > 0 {
+				totalPayable += absBal
+				creditors = append(creditors, PartyBalance{Name: l.Name, Balance: absBal})
+			}
+		} else if strings.Contains(parent, "sales") || strings.Contains(parent, "income") {
+			revenueYTD += absBal
+		} else if strings.Contains(parent, "purchase") || strings.Contains(parent, "expense") {
+			expensesYTD += absBal
+		}
+	}
+
+	// Sort debtors descending by balance and pick top 5
+	sort.Slice(debtors, func(i, j int) bool {
+		return debtors[i].Balance > debtors[j].Balance
+	})
+	if len(debtors) > 5 {
+		debtors = debtors[:5]
+	}
+
+	// Sort creditors descending by balance and pick top 5
+	sort.Slice(creditors, func(i, j int) bool {
+		return creditors[i].Balance > creditors[j].Balance
+	})
+	if len(creditors) > 5 {
+		creditors = creditors[:5]
+	}
+
+	netProfitYTD := revenueYTD - expensesYTD
+	workingCapital := (cashAndBank + totalReceivable) - totalPayable
+
+	companyName := c.defaultCompany
+	if companyName == "" {
+		if comps, err := c.ListCompanies(ctx); err == nil && len(comps) > 0 {
+			companyName = comps[0].Name
+		}
+	}
+	if companyName == "" {
+		companyName = "Active Company"
+	}
+
+	summaryText := fmt.Sprintf(
+		"Company: %s (as on %s) | Cash & Bank: %.2f | Receivables: %.2f | Payables: %.2f | Working Capital: %.2f | Revenue: %.2f | Net Profit: %.2f",
+		companyName, asOnDate, cashAndBank, totalReceivable, totalPayable, workingCapital, revenueYTD, netProfitYTD,
+	)
+
+	return &FinancialSummary{
+		AsOnDate:        asOnDate,
+		Company:         companyName,
+		CashAndBank:     cashAndBank,
+		TotalReceivable: totalReceivable,
+		TopDebtors:      debtors,
+		TotalPayable:    totalPayable,
+		TopCreditors:    creditors,
+		RevenueYTD:      revenueYTD,
+		NetProfitYTD:    netProfitYTD,
+		WorkingCapital:  workingCapital,
+		Summary:         summaryText,
+	}, nil
 }
 
 // GeneratePDFOptions specifies the report or voucher parameters for PDF generation.

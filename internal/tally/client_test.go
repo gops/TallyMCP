@@ -799,3 +799,206 @@ func TestQueryContextCancellation(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
 }
+
+func TestMemoryCache(t *testing.T) {
+	cache := tally.NewMemoryCache(50 * time.Millisecond)
+
+	cache.Set("ledgers:company1:all", "val1")
+	cache.Set("ledgers:company1:debtors", "val2")
+	cache.Set("stock:company1:all", "val3")
+
+	if v, ok := cache.Get("ledgers:company1:all"); !ok || v != "val1" {
+		t.Fatalf("expected val1, got %v", v)
+	}
+
+	// Invalidate prefix
+	cache.Invalidate("ledgers:")
+	if _, ok := cache.Get("ledgers:company1:all"); ok {
+		t.Errorf("expected ledgers:company1:all to be invalidated")
+	}
+	if v, ok := cache.Get("stock:company1:all"); !ok || v != "val3" {
+		t.Errorf("expected stock:company1:all to persist")
+	}
+
+	// Expiration
+	time.Sleep(60 * time.Millisecond)
+	if _, ok := cache.Get("stock:company1:all"); ok {
+		t.Errorf("expected stock:company1:all to expire after TTL")
+	}
+}
+
+func TestFilterLedgersAndFinancialSummary(t *testing.T) {
+	mockLedgerXML := `<ENVELOPE>
+  <HEADER><STATUS>1</STATUS></HEADER>
+  <BODY>
+    <DATA>
+      <TALLYMESSAGE><LEDGER NAME="HDFC Bank" PARENT="Bank Accounts"><CLOSINGBALANCE>-150000.00</CLOSINGBALANCE></LEDGER></TALLYMESSAGE>
+      <TALLYMESSAGE><LEDGER NAME="Cash in Hand" PARENT="Cash-in-Hand"><CLOSINGBALANCE>-25000.00</CLOSINGBALANCE></LEDGER></TALLYMESSAGE>
+      <TALLYMESSAGE><LEDGER NAME="Tata Consultancy Services" PARENT="Sundry Debtors"><CLOSINGBALANCE>-85000.00</CLOSINGBALANCE><LEDGERSTATENAME>Maharashtra</LEDGERSTATENAME></LEDGER></TALLYMESSAGE>
+      <TALLYMESSAGE><LEDGER NAME="Infosys Ltd" PARENT="Sundry Debtors"><CLOSINGBALANCE>-62000.00</CLOSINGBALANCE><LEDGERSTATENAME>Karnataka</LEDGERSTATENAME></LEDGER></TALLYMESSAGE>
+      <TALLYMESSAGE><LEDGER NAME="Wipro Technologies" PARENT="Sundry Debtors"><CLOSINGBALANCE>-12000.00</CLOSINGBALANCE><LEDGERSTATENAME>Karnataka</LEDGERSTATENAME></LEDGER></TALLYMESSAGE>
+      <TALLYMESSAGE><LEDGER NAME="Dell Suppliers" PARENT="Sundry Creditors"><CLOSINGBALANCE>45000.00</CLOSINGBALANCE><LEDGERSTATENAME>Delhi</LEDGERSTATENAME></LEDGER></TALLYMESSAGE>
+      <TALLYMESSAGE><LEDGER NAME="HP Distributors" PARENT="Sundry Creditors"><CLOSINGBALANCE>30000.00</CLOSINGBALANCE><LEDGERSTATENAME>Maharashtra</LEDGERSTATENAME></LEDGER></TALLYMESSAGE>
+      <TALLYMESSAGE><LEDGER NAME="Domestic Sales" PARENT="Sales Accounts"><CLOSINGBALANCE>-500000.00</CLOSINGBALANCE></LEDGER></TALLYMESSAGE>
+      <TALLYMESSAGE><LEDGER NAME="Raw Material Purchases" PARENT="Purchase Accounts"><CLOSINGBALANCE>320000.00</CLOSINGBALANCE></LEDGER></TALLYMESSAGE>
+    </DATA>
+  </BODY>
+</ENVELOPE>`
+
+	var httpCallCount int32
+	client := tally.NewClient(config.TallyConfig{
+		URL:              "http://mock-tally:9000",
+		CacheTTLSeconds: 60,
+		DefaultCompany:   "Acme Corp",
+	})
+
+	client.SetTransport(roundTripFunc(func(req *http.Request) *http.Response {
+		atomic.AddInt32(&httpCallCount, 1)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/xml;charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader(mockLedgerXML)),
+		}
+	}))
+
+	ctx := context.Background()
+
+	// 1. First call fetches from HTTP
+	paged, err := client.FilterLedgers(ctx, "", "tata", 10, 0, false)
+	if err != nil {
+		t.Fatalf("filter ledgers failed: %v", err)
+	}
+	if paged.Total != 1 {
+		t.Errorf("expected 1 result matching 'tata', got %d", paged.Total)
+	}
+	if atomic.LoadInt32(&httpCallCount) != 1 {
+		t.Errorf("expected 1 http call, got %d", httpCallCount)
+	}
+
+	// 2. Second call should hit memory cache (0 new HTTP calls)
+	pagedCompact, err := client.FilterLedgers(ctx, "", "", 2, 0, true)
+	if err != nil {
+		t.Fatalf("filter ledgers compact failed: %v", err)
+	}
+	if pagedCompact.Total != 9 {
+		t.Errorf("expected 9 total ledgers, got %d", pagedCompact.Total)
+	}
+	if pagedCompact.Count != 2 {
+		t.Errorf("expected count 2, got %d", pagedCompact.Count)
+	}
+	if !pagedCompact.HasMore {
+		t.Errorf("expected HasMore to be true")
+	}
+	if atomic.LoadInt32(&httpCallCount) != 1 {
+		t.Errorf("expected cache hit with 1 total HTTP call, got %d", httpCallCount)
+	}
+
+	// 3. Test Financial Summary
+	summary, err := client.GetFinancialSummary(ctx, "20250331", "20240401")
+	if err != nil {
+		t.Fatalf("get financial summary failed: %v", err)
+	}
+
+	// Cash & Bank = 150000 + 25000 = 175000
+	if summary.CashAndBank != 175000 {
+		t.Errorf("expected CashAndBank 175000, got %.2f", summary.CashAndBank)
+	}
+	// TotalReceivable = 85000 + 62000 + 12000 = 159000
+	if summary.TotalReceivable != 159000 {
+		t.Errorf("expected TotalReceivable 159000, got %.2f", summary.TotalReceivable)
+	}
+	// TotalPayable = 45000 + 30000 = 75000
+	if summary.TotalPayable != 75000 {
+		t.Errorf("expected TotalPayable 75000, got %.2f", summary.TotalPayable)
+	}
+	// Top Debtors count = 3
+	if len(summary.TopDebtors) != 3 || summary.TopDebtors[0].Name != "Tata Consultancy Services" {
+		t.Errorf("unexpected top debtors: %+v", summary.TopDebtors)
+	}
+	// Working Capital = (175000 + 159000) - 75000 = 259000
+	if summary.WorkingCapital != 259000 {
+		t.Errorf("expected WorkingCapital 259000, got %.2f", summary.WorkingCapital)
+	}
+	// Revenue = 500000, Expenses = 320000, Net Profit = 180000
+	if summary.RevenueYTD != 500000 || summary.NetProfitYTD != 180000 {
+		t.Errorf("expected Revenue 500000 and NetProfit 180000, got Rev: %.2f, NP: %.2f", summary.RevenueYTD, summary.NetProfitYTD)
+	}
+	if summary.Summary == "" {
+		t.Errorf("expected summary text, got empty")
+	}
+
+	// 4. Test CreateLedger Cache Invalidation
+	client.SetTransport(roundTripFunc(func(req *http.Request) *http.Response {
+		atomic.AddInt32(&httpCallCount, 1)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/xml;charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader(`<RESPONSE><STATUS>1</STATUS></RESPONSE>`)),
+		}
+	}))
+
+	_, err = client.CreateLedger(ctx, "New Debtor", "Sundry Debtors", 1000)
+	if err != nil {
+		t.Fatalf("create ledger failed: %v", err)
+	}
+
+	// After CreateLedger, cache for ledgers should be invalidated
+	client.SetTransport(roundTripFunc(func(req *http.Request) *http.Response {
+		atomic.AddInt32(&httpCallCount, 1)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/xml;charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader(mockLedgerXML)),
+		}
+	}))
+
+	currentCalls := atomic.LoadInt32(&httpCallCount)
+	_, _ = client.ListLedgers(ctx, "")
+	if atomic.LoadInt32(&httpCallCount) <= currentCalls {
+		t.Errorf("expected cache to be invalidated after CreateLedger, triggering new HTTP call")
+	}
+}
+
+func TestFilterStockItems(t *testing.T) {
+	mockStockXML := `<ENVELOPE>
+  <HEADER><STATUS>1</STATUS></HEADER>
+  <BODY>
+    <DATA>
+      <TALLYMESSAGE><STOCKITEM NAME="Dell Latitude 5420" PARENT="Laptops"><BASEUNITS>Nos</BASEUNITS><CLOSINGBALANCE>15 Nos</CLOSINGBALANCE><CLOSINGVALUE>-750000.00</CLOSINGVALUE></STOCKITEM></TALLYMESSAGE>
+      <TALLYMESSAGE><STOCKITEM NAME="Apple MacBook Pro 14" PARENT="Laptops"><BASEUNITS>Nos</BASEUNITS><CLOSINGBALANCE>8 Nos</CLOSINGBALANCE><CLOSINGVALUE>-1200000.00</CLOSINGVALUE></STOCKITEM></TALLYMESSAGE>
+      <TALLYMESSAGE><STOCKITEM NAME="Logitech MX Master 3S" PARENT="Accessories"><BASEUNITS>Nos</BASEUNITS><CLOSINGBALANCE>50 Nos</CLOSINGBALANCE><CLOSINGVALUE>-350000.00</CLOSINGVALUE></STOCKITEM></TALLYMESSAGE>
+    </DATA>
+  </BODY>
+</ENVELOPE>`
+
+	client := tally.NewClient(config.TallyConfig{
+		URL: "http://mock-tally:9000",
+	})
+	client.SetTransport(roundTripFunc(func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/xml;charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader(mockStockXML)),
+		}
+	}))
+
+	ctx := context.Background()
+
+	// Search filter
+	res, err := client.FilterStockItems(ctx, "", "apple", 10, 0, false)
+	if err != nil {
+		t.Fatalf("FilterStockItems failed: %v", err)
+	}
+	if res.Total != 1 {
+		t.Errorf("expected 1 result matching 'apple', got %d", res.Total)
+	}
+
+	// Compact projection
+	compactRes, err := client.FilterStockItems(ctx, "", "", 1, 0, true)
+	if err != nil {
+		t.Fatalf("FilterStockItems compact failed: %v", err)
+	}
+	if compactRes.Total != 3 || compactRes.Count != 1 || !compactRes.HasMore {
+		t.Errorf("unexpected compact pagination result: %+v", compactRes)
+	}
+}

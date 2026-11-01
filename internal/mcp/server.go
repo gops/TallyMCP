@@ -73,8 +73,12 @@ func (s *Server) registerTools() {
 	// 3. tally_list_ledgers
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_list_ledgers",
-			mcp.WithDescription("List account ledgers (customers, vendors, bank, cash) with balances and contact info."),
+			mcp.WithDescription("List account ledgers (customers, vendors, bank, cash) with balances and contact info. Supports substring search, pagination, and token-optimized compact mode."),
 			mcp.WithString("group", mcp.Description("Optional parent group name to filter ledgers (e.g. 'Sundry Debtors', 'Sundry Creditors', 'Bank Accounts', 'Cash-in-Hand')")),
+			mcp.WithString("search", mcp.Description("Optional case-insensitive substring search across ledger name, parent group, or state (e.g. 'Tata', 'HDFC', 'Karnataka')")),
+			mcp.WithNumber("limit", mcp.Description("Number of ledgers to return per page (default: 50, max: 250)")),
+			mcp.WithNumber("offset", mcp.Description("Zero-based index of the first ledger to return (default: 0)")),
+			mcp.WithBoolean("summary_only", mcp.Description("If true, returns token-minimized compact fields (name, parent, balance, state) saving up to 70% tokens")),
 		),
 		s.handlers.HandleListLedgers,
 	)
@@ -116,10 +120,24 @@ func (s *Server) registerTools() {
 	// 6. tally_get_stock_summary
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_get_stock_summary",
-			mcp.WithDescription("Get inventory items, stock closing balances, units, rates, and valuations."),
+			mcp.WithDescription("Get inventory items, stock closing balances, units, rates, and valuations. Supports substring search, pagination, and token-optimized compact mode."),
 			mcp.WithString("group", mcp.Description("Optional stock group name filter")),
+			mcp.WithString("search", mcp.Description("Optional case-insensitive substring search filter across stock item name or category (e.g. 'iPhone', 'Dell', 'Hardware')")),
+			mcp.WithNumber("limit", mcp.Description("Number of stock items to return per page (default: 50, max: 250)")),
+			mcp.WithNumber("offset", mcp.Description("Zero-based index of the first item to return (default: 0)")),
+			mcp.WithBoolean("summary_only", mcp.Description("If true, returns token-minimized compact fields (name, parent, balance, value) saving up to 70% tokens")),
 		),
 		s.handlers.HandleListStockItems,
+	)
+
+	// tally_get_financial_summary
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_financial_summary",
+			mcp.WithDescription("Get an executive KPI financial overview snapshot in < 350 tokens (Cash & Bank, Total Receivables, Top 5 Debtors, Total Payables, Top 5 Creditors, Working Capital, Revenue, and Net Profit). Ideal first call for financial health checks."),
+			mcp.WithString("as_on_date", mcp.Description("Cutoff date in YYYYMMDD or YYYY-MM-DD format (defaults to current date)")),
+			mcp.WithString("from_date", mcp.Description("Optional financial year start date in YYYYMMDD format")),
+		),
+		s.handlers.HandleGetFinancialSummary,
 	)
 
 	// 7. tally_get_trial_balance

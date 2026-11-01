@@ -145,3 +145,12 @@ func PrettyJSON(v any) (string, error) {
 	}
 	return string(b), nil
 }
+
+// CompactJSON converts any Go value to a compact JSON string without unnecessary whitespace to minimize token usage.
+func CompactJSON(v any) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}

@@ -63,6 +63,7 @@ type CompanyItem struct {
 type LedgerItem struct {
 	Name           string  `xml:"NAME,attr" json:"name"`
 	Parent         string  `xml:"PARENT" json:"parent"`
+	ParentAttr     string  `xml:"PARENT,attr" json:"-"`
 	OpeningBalance float64 `xml:"OPENINGBALANCE" json:"opening_balance"`
 	ClosingBalance float64 `xml:"CLOSINGBALANCE" json:"closing_balance"`
 	Phone          string  `xml:"LEDGERPHONE,omitempty" json:"phone,omitempty"`
@@ -78,6 +79,7 @@ type LedgerItem struct {
 type StockItemModel struct {
 	Name           string  `xml:"NAME,attr" json:"name"`
 	Parent         string  `xml:"PARENT" json:"parent"`
+	ParentAttr     string  `xml:"PARENT,attr" json:"-"`
 	BaseUnits      string  `xml:"BASEUNITS" json:"base_units"`
 	OpeningBalance string  `xml:"OPENINGBALANCE,omitempty" json:"opening_balance,omitempty"`
 	OpeningValue   float64 `xml:"OPENINGVALUE,omitempty" json:"opening_value,omitempty"`
@@ -85,6 +87,65 @@ type StockItemModel struct {
 	ClosingBalance string  `xml:"CLOSINGBALANCE,omitempty" json:"closing_balance,omitempty"`
 	ClosingValue   float64 `xml:"CLOSINGVALUE,omitempty" json:"closing_value,omitempty"`
 	ClosingRate    string  `xml:"CLOSINGRATE,omitempty" json:"closing_rate,omitempty"`
+}
+
+// CompactLedgerItem provides a lightweight, token-minimized representation of a ledger.
+type CompactLedgerItem struct {
+	Name           string  `json:"name"`
+	Parent         string  `json:"parent,omitempty"`
+	ClosingBalance float64 `json:"balance"`
+	State          string  `json:"state,omitempty"`
+}
+
+// CompactStockItem provides a lightweight, token-minimized representation of an inventory item.
+type CompactStockItem struct {
+	Name           string  `json:"name"`
+	Parent         string  `json:"parent,omitempty"`
+	ClosingBalance string  `json:"balance,omitempty"`
+	ClosingValue   float64 `json:"value,omitempty"`
+}
+
+// PaginatedLedgers contains filtered/paginated ledgers along with paging metadata.
+type PaginatedLedgers struct {
+	Total      int  `json:"total"`
+	Count      int  `json:"count"`
+	Offset     int  `json:"offset"`
+	Limit      int  `json:"limit"`
+	HasMore    bool `json:"has_more"`
+	NextOffset *int `json:"next_offset,omitempty"`
+	Ledgers    any  `json:"ledgers"`
+}
+
+// PaginatedStockItems contains filtered/paginated stock items along with paging metadata.
+type PaginatedStockItems struct {
+	Total      int  `json:"total"`
+	Count      int  `json:"count"`
+	Offset     int  `json:"offset"`
+	Limit      int  `json:"limit"`
+	HasMore    bool `json:"has_more"`
+	NextOffset *int `json:"next_offset,omitempty"`
+	StockItems any  `json:"stock_items"`
+}
+
+// FinancialSummary provides an executive-level KPI snapshot answering standard AI prompts in < 350 tokens.
+type FinancialSummary struct {
+	AsOnDate        string         `json:"as_on_date"`
+	Company         string         `json:"company"`
+	CashAndBank     float64        `json:"cash_and_bank"`
+	TotalReceivable float64        `json:"total_receivable"`
+	TopDebtors      []PartyBalance `json:"top_debtors,omitempty"`
+	TotalPayable    float64        `json:"total_payable"`
+	TopCreditors    []PartyBalance `json:"top_creditors,omitempty"`
+	RevenueYTD      float64        `json:"revenue_ytd,omitempty"`
+	NetProfitYTD    float64        `json:"net_profit_ytd,omitempty"`
+	WorkingCapital  float64        `json:"working_capital,omitempty"`
+	Summary         string         `json:"summary"`
+}
+
+// PartyBalance represents an individual party's outstanding dues.
+type PartyBalance struct {
+	Name    string  `json:"name"`
+	Balance float64 `json:"balance"`
 }
 
 // VoucherItem represents an accounting/inventory transaction in Tally.

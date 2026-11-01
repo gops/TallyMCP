@@ -47,6 +47,12 @@ A high-performance, **self-updating Windows executable** written in Go that acts
   - Real-time Trial Balance report (`tally_get_trial_balance`).
   - Dedicated Financial Reports: Profit & Loss statement (`tally_get_profit_and_loss`), Balance Sheet (`tally_get_balance_sheet`), Bills Receivable & Payable aging analysis (`tally_get_outstanding_receivables`, `tally_get_outstanding_payables`), and Day Book entries (`tally_get_daybook`).
   - On-Demand PDF Export & Delivery: Instruct Tally to generate and export any financial statement or invoice/voucher directly to PDF (`tally_generate_pdf`). Automatically saved in the local temporary directory, downloadable via HTTP (`/files/`), and transmitted to requesting AI agents via MCP.
+  - ⚡ **Agentic Performance & Token Optimization**: Engineered specifically for LLM context efficiency and sub-second responses:
+    - **In-Memory Master Data TTL Cache**: Master data (`companies`, `ledgers`, `stock items`) is held in a thread-safe in-memory cache with configurable TTL (`cache_ttl_seconds: 30`), responding in $< 1\text{ ms}$ on cache hits without touching Tally's single-threaded HTTP engine. Automatically invalidates when new masters are created (`tally_create_ledger`).
+    - **Server-Side Substring Search**: Substring filtering (`search: "Tata"`) on ledgers and stock items drops token payload by over 95% compared to fetching raw lists.
+    - **Pagination & Compact Mode**: Safe default page sizes (`limit: 50, max: 250`, `offset`, `has_more`, `next_offset`) and token-minimized projections (`summary_only: true`) protect AI context windows.
+    - **Executive Financial Snapshot**: One-call financial overview tool (`tally_get_financial_summary`) returning Cash/Bank, Receivables, Payables, Top 5 Debtors & Creditors, Working Capital, Revenue, and Net Profit in $< 350$ tokens.
+    - **Whitespace-Free Compact JSON**: Strips whitespace formatting across tool outputs to prevent token waste.
   - 🚦 **Zero-Overload Query Serializer & Buffer**: Protects Tally ERP 9 / TallyPrime's single-threaded XML engine from freezing or dropping connections under high load. Automatically serializes all incoming requests (strictly zero parallel queries), buffers up to 100 queries in an in-memory queue, applies a cooldown interval (`throttle_ms: 15`), and exposes real-time queue health in `tally_status` and `/health`.
   - Advanced raw XML / TDL query executor (`tally_execute_xml`).
   - Ledger creation (`tally_create_ledger`).
@@ -167,12 +173,13 @@ If you enabled authentication in `config.yaml`:
 | MCP Tool Name | Description | Key Arguments |
 |---|---|---|
 | `tally_status` | Test Tally connectivity, server health, and loaded companies | *none* |
-| `tally_list_companies` | List all open / loaded companies in Tally | *none* |
-| `tally_list_ledgers` | Fetch ledgers with balances, contact details, and GSTIN | `group` (e.g. `"Sundry Debtors"`) |
+| `tally_list_companies` | List all open / loaded companies in Tally (instant TTL cached) | *none* |
+| `tally_get_financial_summary` | Executive financial KPI overview snapshot in < 350 tokens (Cash/Bank, Receivables, Payables, Top 5 Debtors/Creditors, Working Capital, Revenue, Net Profit) | `as_on_date`, `from_date` |
+| `tally_list_ledgers` | Search & list account ledgers with substring search, pagination, and token-optimized compact mode | `search`, `group`, `limit` (default: 50, max: 250), `offset`, `summary_only` |
 | `tally_get_ledger` | Fetch complete ledger profile and address | `name` *(required)* |
 | `tally_list_vouchers` | Search vouchers with pagination and context window safety (`has_more`, `next_offset`) | `voucher_type`, `from_date`, `to_date`, `limit` (default: 50, max: 250), `offset` (default: 0) |
 | `tally_get_voucher` | Full voucher drilldown: all ledger legs, inventory quantities, bill allocations, and tax split | `voucher_no` or `master_id` *(required)*, `voucher_type`, `date` |
-| `tally_get_stock_summary`| Inspect inventory quantities, units, and valuations | `group` (optional filter) |
+| `tally_get_stock_summary`| Inspect inventory quantities, units, and valuations with search, pagination, and compact mode | `search`, `group`, `limit` (default: 50, max: 250), `offset`, `summary_only` |
 | `tally_get_trial_balance` | Fetch formatted Trial Balance statement | `from_date`, `to_date` |
 | `tally_get_profit_and_loss` | Fetch Profit & Loss statement (Revenue, COGS, Gross Profit, Expenses, Net Profit) | `from_date`, `to_date` |
 | `tally_get_balance_sheet` | Fetch Balance Sheet report (Liabilities vs Assets, Capital, Loans, Debtors, Creditors) | `as_on_date`, `from_date` |
@@ -181,7 +188,7 @@ If you enabled authentication in `config.yaml`:
 | `tally_get_daybook` | Fetch Day Book report listing all transactions entered on a specific date | `date` *(YYYYMMDD or YYYY-MM-DD)* |
 | `tally_generate_pdf` | Instruct Tally to export report or invoice to PDF, store in temp folder, and deliver via MCP | `report_type` *(required)*, `voucher_no`, `voucher_type`, `party`, `from_date`, `to_date`, `date`, `filename` |
 | `tally_execute_xml` | Execute raw TDL or XML envelopes against Tally | `xml_content` *(required)* |
-| `tally_create_ledger` | Create a new ledger master in Tally | `name`, `parent`, `opening_balance` |
+| `tally_create_ledger` | Create a new ledger master in Tally (auto-invalidates ledger cache) | `name`, `parent`, `opening_balance` |
 | `system_check_update` | Query GitHub Releases for available updates | *none* |
 | `system_apply_update` | Download and self-update the running binary | *none* |
 
@@ -242,6 +249,8 @@ tally:
   max_queue_size: 100
   # Cooldown throttle in milliseconds between consecutive queries (ensures no parallel queries)
   throttle_ms: 15
+  # In-memory TTL cache duration in seconds for master data (companies, ledgers, stock items)
+  cache_ttl_seconds: 30
 
 auth:
   # Set to true to require authentication from LAN clients

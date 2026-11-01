@@ -39,6 +39,8 @@ type TallyConfig struct {
 	MaxQueueSize int `yaml:"max_queue_size"`
 	// ThrottleMs is a small cooldown period between queries in milliseconds (default: 15).
 	ThrottleMs int `yaml:"throttle_ms"`
+	// CacheTTLSeconds is the TTL for master data in-memory cache in seconds (default: 30).
+	CacheTTLSeconds int `yaml:"cache_ttl_seconds"`
 }
 
 // AuthConfig defines API key / Bearer token security for local network access.
@@ -72,11 +74,12 @@ func DefaultConfig() *Config {
 			Transport:     "sse",
 		},
 		Tally: TallyConfig{
-			URL:            "http://localhost:9000",
-			TimeoutSeconds: 30,
-			DefaultCompany: "",
-			MaxQueueSize:   100,
-			ThrottleMs:     15,
+			URL:             "http://localhost:9000",
+			TimeoutSeconds:  30,
+			DefaultCompany:  "",
+			MaxQueueSize:    100,
+			ThrottleMs:      15,
+			CacheTTLSeconds: 30,
 		},
 		Auth: AuthConfig{
 			Enabled: false,
@@ -167,6 +170,11 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Tally.ThrottleMs = n
 		}
 	}
+	if val := os.Getenv("TALLY_CACHE_TTL_SECONDS"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n >= 0 {
+			cfg.Tally.CacheTTLSeconds = n
+		}
+	}
 }
 
 // WriteDefaultConfigFile writes a fully commented default config file to path.
@@ -192,6 +200,8 @@ tally:
   max_queue_size: 100
   # Throttle cooldown in milliseconds between queries (ensures no parallel queries)
   throttle_ms: 15
+  # In-memory cache TTL for master data in seconds (instant sub-millisecond repeated queries)
+  cache_ttl_seconds: 30
 
 auth:
   # Set to true to require authentication from LAN clients

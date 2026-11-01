@@ -209,6 +209,8 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 			"tally_list_ledgers",
 			"tally_list_vouchers",
 			"tally_get_voucher",
+			"tally_get_stock_summary",
+			"tally_get_financial_summary",
 			"tally_get_profit_and_loss",
 			"tally_get_balance_sheet",
 			"tally_get_outstanding_receivables",
@@ -422,6 +424,82 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 		_, _ = fileResp.Body.Read(fileHeader)
 		if !bytes.HasPrefix(fileHeader, []byte("%PDF-1.4")) {
 			t.Errorf("expected PDF header from /files/ endpoint, got %q", string(fileHeader))
+		}
+	})
+
+	// 9. Test Streamable HTTP tools/call tally_list_ledgers with search & summary_only
+	t.Run("POST /mcp tools/call tally_list_ledgers compact and search", func(t *testing.T) {
+		callPayload := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      301,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name": "tally_list_ledgers",
+				"arguments": map[string]any{
+					"search":       "Tata",
+					"limit":        10,
+					"offset":       0,
+					"summary_only": true,
+				},
+			},
+		}
+		data, _ := json.Marshal(callPayload)
+
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp tally_list_ledgers failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 OK, got %d", resp.StatusCode)
+		}
+	})
+
+	// 10. Test Streamable HTTP tools/call tally_get_financial_summary
+	t.Run("POST /mcp tools/call tally_get_financial_summary", func(t *testing.T) {
+		callPayload := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      302,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name": "tally_get_financial_summary",
+				"arguments": map[string]any{
+					"as_on_date": "20250331",
+					"from_date":  "20240401",
+				},
+			},
+		}
+		data, _ := json.Marshal(callPayload)
+
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp tally_get_financial_summary failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 OK, got %d", resp.StatusCode)
 		}
 	})
 
