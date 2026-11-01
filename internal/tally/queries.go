@@ -180,6 +180,107 @@ const trialBalanceTemplate = `<ENVELOPE>
   </BODY>
 </ENVELOPE>`
 
+const profitAndLossTemplate = `<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Profit and Loss</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
+        {{if .FromDate}}<SVFROMDATE>{{.FromDate}}</SVFROMDATE>{{end}}
+        {{if .ToDate}}<SVTODATE>{{.ToDate}}</SVTODATE>{{end}}
+        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+      </STATICVARIABLES>
+    </DESC>
+  </BODY>
+</ENVELOPE>`
+
+const balanceSheetTemplate = `<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Balance Sheet</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
+        {{if .FromDate}}<SVFROMDATE>{{.FromDate}}</SVFROMDATE>{{end}}
+        {{if .AsOnDate}}<SVTODATE>{{.AsOnDate}}</SVTODATE>{{end}}
+        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+      </STATICVARIABLES>
+    </DESC>
+  </BODY>
+</ENVELOPE>`
+
+const billsReceivableTemplate = `<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Bills Receivable</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
+        {{if .FromDate}}<SVFROMDATE>{{.FromDate}}</SVFROMDATE>{{end}}
+        {{if .ToDate}}<SVTODATE>{{.ToDate}}</SVTODATE>{{end}}
+        {{if .Party}}<LEDGERNAME>{{.Party}}</LEDGERNAME>{{end}}
+        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+      </STATICVARIABLES>
+    </DESC>
+  </BODY>
+</ENVELOPE>`
+
+const billsPayableTemplate = `<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Bills Payable</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
+        {{if .FromDate}}<SVFROMDATE>{{.FromDate}}</SVFROMDATE>{{end}}
+        {{if .ToDate}}<SVTODATE>{{.ToDate}}</SVTODATE>{{end}}
+        {{if .Party}}<LEDGERNAME>{{.Party}}</LEDGERNAME>{{end}}
+        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+      </STATICVARIABLES>
+    </DESC>
+  </BODY>
+</ENVELOPE>`
+
+const dayBookTemplate = `<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Day Book</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
+        {{if .Date}}<SVFROMDATE>{{.Date}}</SVFROMDATE><SVTODATE>{{.Date}}</SVTODATE>{{end}}
+        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+      </STATICVARIABLES>
+    </DESC>
+  </BODY>
+</ENVELOPE>`
+
 const createLedgerTemplate = `<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
@@ -246,13 +347,21 @@ func BuildListStockItemsXML(company, group string) (string, error) {
 	})
 }
 
+// CleanDate strips hyphens and slashes from dates so formats like YYYY-MM-DD or YYYY/MM/DD convert to YYYYMMDD required by Tally.
+func CleanDate(d string) string {
+	d = strings.TrimSpace(d)
+	d = strings.ReplaceAll(d, "-", "")
+	d = strings.ReplaceAll(d, "/", "")
+	return d
+}
+
 // BuildListVouchersXML generates the XML for exporting vouchers with optional date and type filters.
 func BuildListVouchersXML(company, voucherType, fromDate, toDate string) (string, error) {
 	return executeTemplate("listVouchers", listVouchersTemplate, map[string]string{
 		"Company":     company,
 		"VoucherType": voucherType,
-		"FromDate":    fromDate,
-		"ToDate":      toDate,
+		"FromDate":    CleanDate(fromDate),
+		"ToDate":      CleanDate(toDate),
 	})
 }
 
@@ -263,7 +372,7 @@ func BuildGetVoucherXML(company, masterID, voucherNumber, voucherType, date stri
 		"MasterID":      strings.TrimSpace(masterID),
 		"VoucherNumber": strings.TrimSpace(voucherNumber),
 		"VoucherType":   strings.TrimSpace(voucherType),
-		"Date":          strings.TrimSpace(date),
+		"Date":          CleanDate(date),
 	})
 }
 
@@ -271,8 +380,8 @@ func BuildGetVoucherXML(company, masterID, voucherNumber, voucherType, date stri
 func BuildTrialBalanceXML(company, fromDate, toDate string) (string, error) {
 	return executeTemplate("trialBalance", trialBalanceTemplate, map[string]string{
 		"Company":  company,
-		"FromDate": fromDate,
-		"ToDate":   toDate,
+		"FromDate": CleanDate(fromDate),
+		"ToDate":   CleanDate(toDate),
 	})
 }
 
@@ -283,5 +392,51 @@ func BuildCreateLedgerXML(company, name, parent string, openingBalance float64) 
 		"Name":           name,
 		"Parent":         parent,
 		"OpeningBalance": openingBalance,
+	})
+}
+
+// BuildProfitAndLossXML generates the XML for exporting the Profit and Loss statement.
+func BuildProfitAndLossXML(company, fromDate, toDate string) (string, error) {
+	return executeTemplate("profitAndLoss", profitAndLossTemplate, map[string]string{
+		"Company":  company,
+		"FromDate": CleanDate(fromDate),
+		"ToDate":   CleanDate(toDate),
+	})
+}
+
+// BuildBalanceSheetXML generates the XML for exporting the Balance Sheet statement.
+func BuildBalanceSheetXML(company, asOnDate, fromDate string) (string, error) {
+	return executeTemplate("balanceSheet", balanceSheetTemplate, map[string]string{
+		"Company":  company,
+		"AsOnDate": CleanDate(asOnDate),
+		"FromDate": CleanDate(fromDate),
+	})
+}
+
+// BuildBillsReceivableXML generates the XML for exporting the Bills Receivable report.
+func BuildBillsReceivableXML(company, party, fromDate, toDate string) (string, error) {
+	return executeTemplate("billsReceivable", billsReceivableTemplate, map[string]string{
+		"Company":  company,
+		"Party":    strings.TrimSpace(party),
+		"FromDate": CleanDate(fromDate),
+		"ToDate":   CleanDate(toDate),
+	})
+}
+
+// BuildBillsPayableXML generates the XML for exporting the Bills Payable report.
+func BuildBillsPayableXML(company, party, fromDate, toDate string) (string, error) {
+	return executeTemplate("billsPayable", billsPayableTemplate, map[string]string{
+		"Company":  company,
+		"Party":    strings.TrimSpace(party),
+		"FromDate": CleanDate(fromDate),
+		"ToDate":   CleanDate(toDate),
+	})
+}
+
+// BuildDayBookXML generates the XML for exporting the Day Book report.
+func BuildDayBookXML(company, date string) (string, error) {
+	return executeTemplate("dayBook", dayBookTemplate, map[string]string{
+		"Company": company,
+		"Date":    CleanDate(date),
 	})
 }

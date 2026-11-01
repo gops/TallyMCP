@@ -375,3 +375,161 @@ func TestGetVoucher(t *testing.T) {
 		t.Errorf("unexpected SGST tax: %+v", detail.Taxes[1])
 	}
 }
+
+func TestReportXMLBuilders(t *testing.T) {
+	t.Run("BuildProfitAndLossXML", func(t *testing.T) {
+		xml, err := tally.BuildProfitAndLossXML("MyCompany", "2024-04-01", "2025-03-31")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(xml, "<ID>Profit and Loss</ID>") {
+			t.Errorf("expected Profit and Loss report ID")
+		}
+		if !strings.Contains(xml, "<SVCURRENTCOMPANY>MyCompany</SVCURRENTCOMPANY>") {
+			t.Errorf("expected current company")
+		}
+		if !strings.Contains(xml, "<SVFROMDATE>20240401</SVFROMDATE>") || !strings.Contains(xml, "<SVTODATE>20250331</SVTODATE>") {
+			t.Errorf("expected cleaned date format 20240401 and 20250331, got: %s", xml)
+		}
+		if !strings.Contains(xml, "<EXPLODEFLAG>Yes</EXPLODEFLAG>") {
+			t.Errorf("expected EXPLODEFLAG")
+		}
+	})
+
+	t.Run("BuildBalanceSheetXML", func(t *testing.T) {
+		xml, err := tally.BuildBalanceSheetXML("MyCompany", "2025-03-31", "2024-04-01")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(xml, "<ID>Balance Sheet</ID>") {
+			t.Errorf("expected Balance Sheet report ID")
+		}
+		if !strings.Contains(xml, "<SVTODATE>20250331</SVTODATE>") {
+			t.Errorf("expected as on date in SVTODATE")
+		}
+		if !strings.Contains(xml, "<SVFROMDATE>20240401</SVFROMDATE>") {
+			t.Errorf("expected from date in SVFROMDATE")
+		}
+	})
+
+	t.Run("BuildBillsReceivableXML", func(t *testing.T) {
+		xml, err := tally.BuildBillsReceivableXML("MyCompany", "Acme Customer Ltd", "2024-04-01", "2025-03-31")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(xml, "<ID>Bills Receivable</ID>") {
+			t.Errorf("expected Bills Receivable report ID")
+		}
+		if !strings.Contains(xml, "<LEDGERNAME>Acme Customer Ltd</LEDGERNAME>") {
+			t.Errorf("expected party filter in LEDGERNAME")
+		}
+		if !strings.Contains(xml, "<SVFROMDATE>20240401</SVFROMDATE>") {
+			t.Errorf("expected cleaned date")
+		}
+	})
+
+	t.Run("BuildBillsPayableXML", func(t *testing.T) {
+		xml, err := tally.BuildBillsPayableXML("MyCompany", "Acme Supplier Ltd", "2024-04-01", "2025-03-31")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(xml, "<ID>Bills Payable</ID>") {
+			t.Errorf("expected Bills Payable report ID")
+		}
+		if !strings.Contains(xml, "<LEDGERNAME>Acme Supplier Ltd</LEDGERNAME>") {
+			t.Errorf("expected party filter in LEDGERNAME")
+		}
+	})
+
+	t.Run("BuildDayBookXML", func(t *testing.T) {
+		xml, err := tally.BuildDayBookXML("MyCompany", "2024-05-15")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(xml, "<ID>Day Book</ID>") {
+			t.Errorf("expected Day Book report ID")
+		}
+		if !strings.Contains(xml, "<SVFROMDATE>20240515</SVFROMDATE><SVTODATE>20240515</SVTODATE>") {
+			t.Errorf("expected single day in SVFROMDATE and SVTODATE")
+		}
+	})
+}
+
+func TestFinancialReportsClient(t *testing.T) {
+	mockReportResponse := `<ENVELOPE>
+  <HEADER><STATUS>1</STATUS></HEADER>
+  <BODY>
+    <DATA>
+      <REPORTITEM>
+        <NAME>Sales Accounts</NAME>
+        <AMOUNT>-250000.00</AMOUNT>
+      </REPORTITEM>
+    </DATA>
+  </BODY>
+</ENVELOPE>`
+
+	client := tally.NewClient(config.TallyConfig{
+		URL:            "http://mock-tally:9000",
+		TimeoutSeconds: 5,
+	})
+
+	client.SetTransport(roundTripFunc(func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/xml;charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader(mockReportResponse)),
+		}
+	}))
+
+	ctx := context.Background()
+
+	t.Run("GetProfitAndLoss", func(t *testing.T) {
+		res, err := client.GetProfitAndLoss(ctx, "2024-04-01", "2025-03-31")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res == nil || res["ENVELOPE"] == nil {
+			t.Errorf("expected parsed envelope in result")
+		}
+	})
+
+	t.Run("GetBalanceSheet", func(t *testing.T) {
+		res, err := client.GetBalanceSheet(ctx, "2025-03-31", "2024-04-01")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res == nil || res["ENVELOPE"] == nil {
+			t.Errorf("expected parsed envelope in result")
+		}
+	})
+
+	t.Run("GetOutstandingReceivables", func(t *testing.T) {
+		res, err := client.GetOutstandingReceivables(ctx, "Acme Customer", "2024-04-01", "2025-03-31")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res == nil || res["ENVELOPE"] == nil {
+			t.Errorf("expected parsed envelope in result")
+		}
+	})
+
+	t.Run("GetOutstandingPayables", func(t *testing.T) {
+		res, err := client.GetOutstandingPayables(ctx, "Acme Supplier", "2024-04-01", "2025-03-31")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res == nil || res["ENVELOPE"] == nil {
+			t.Errorf("expected parsed envelope in result")
+		}
+	})
+
+	t.Run("GetDayBook", func(t *testing.T) {
+		res, err := client.GetDayBook(ctx, "2024-05-15")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res == nil || res["ENVELOPE"] == nil {
+			t.Errorf("expected parsed envelope in result")
+		}
+	})
+}

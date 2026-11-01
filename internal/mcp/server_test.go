@@ -199,7 +199,18 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 			}
 		}
 
-		for _, expected := range []string{"tally_status", "tally_list_companies", "tally_list_ledgers", "tally_list_vouchers", "tally_get_voucher"} {
+		for _, expected := range []string{
+			"tally_status",
+			"tally_list_companies",
+			"tally_list_ledgers",
+			"tally_list_vouchers",
+			"tally_get_voucher",
+			"tally_get_profit_and_loss",
+			"tally_get_balance_sheet",
+			"tally_get_outstanding_receivables",
+			"tally_get_outstanding_payables",
+			"tally_get_daybook",
+		} {
 			if !toolNames[expected] {
 				t.Errorf("expected tool %s to be registered", expected)
 			}
@@ -288,6 +299,53 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 		// Expect isError to be true when required identifiers are missing
 		if isErr, ok := result["isError"].(bool); !ok || !isErr {
 			t.Errorf("expected isError=true for missing voucher identifier, got: %v", result)
+		}
+	})
+
+	// 7. Test Streamable HTTP tools/call financial reports dispatch
+	t.Run("POST /mcp tools/call financial report tools", func(t *testing.T) {
+		reportTools := []string{
+			"tally_get_profit_and_loss",
+			"tally_get_balance_sheet",
+			"tally_get_outstanding_receivables",
+			"tally_get_outstanding_payables",
+			"tally_get_daybook",
+		}
+
+		for idx, toolName := range reportTools {
+			callPayload := map[string]any{
+				"jsonrpc": "2.0",
+				"id":      100 + idx,
+				"method":  "tools/call",
+				"params": map[string]any{
+					"name": toolName,
+					"arguments": map[string]any{
+						"from_date": "20240401",
+						"to_date":   "20250331",
+					},
+				},
+			}
+			data, _ := json.Marshal(callPayload)
+
+			req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewReader(data))
+			if err != nil {
+				t.Fatalf("failed to create request for %s: %v", toolName, err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			if sessionID != "" {
+				req.Header.Set("Mcp-Session-Id", sessionID)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("POST /mcp %s failed: %v", toolName, err)
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("%s: expected 200 OK, got %d", toolName, resp.StatusCode)
+			}
 		}
 	})
 

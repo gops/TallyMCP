@@ -45,6 +45,7 @@ A high-performance, **self-updating Windows executable** written in Go that acts
   - Vouchers & transactions with date filters and automatic LLM pagination (`tally_list_vouchers`).
   - Deep Voucher Drilldown with full debit/credit legs, inventory items, batch details, bill allocations, and GST tax breakdown (`tally_get_voucher`).
   - Real-time Trial Balance report (`tally_get_trial_balance`).
+  - Dedicated Financial Reports: Profit & Loss statement (`tally_get_profit_and_loss`), Balance Sheet (`tally_get_balance_sheet`), Bills Receivable & Payable aging analysis (`tally_get_outstanding_receivables`, `tally_get_outstanding_payables`), and Day Book entries (`tally_get_daybook`).
   - Advanced raw XML / TDL query executor (`tally_execute_xml`).
   - Ledger creation (`tally_create_ledger`).
 - 📜 **100% Open Source**: Permissive [MIT License](./LICENSE).
@@ -171,6 +172,11 @@ If you enabled authentication in `config.yaml`:
 | `tally_get_voucher` | Full voucher drilldown: all ledger legs, inventory quantities, bill allocations, and tax split | `voucher_no` or `master_id` *(required)*, `voucher_type`, `date` |
 | `tally_get_stock_summary`| Inspect inventory quantities, units, and valuations | `group` (optional filter) |
 | `tally_get_trial_balance` | Fetch formatted Trial Balance statement | `from_date`, `to_date` |
+| `tally_get_profit_and_loss` | Fetch Profit & Loss statement (Revenue, COGS, Gross Profit, Expenses, Net Profit) | `from_date`, `to_date` |
+| `tally_get_balance_sheet` | Fetch Balance Sheet report (Liabilities vs Assets, Capital, Loans, Debtors, Creditors) | `as_on_date`, `from_date` |
+| `tally_get_outstanding_receivables` | Fetch Bills Receivable bill-by-bill aging report (who owes us money) | `party`, `from_date`, `to_date` |
+| `tally_get_outstanding_payables` | Fetch Bills Payable bill-by-bill aging report (who we owe money to) | `party`, `from_date`, `to_date` |
+| `tally_get_daybook` | Fetch Day Book report listing all transactions entered on a specific date | `date` *(YYYYMMDD or YYYY-MM-DD)* |
 | `tally_execute_xml` | Execute raw TDL or XML envelopes against Tally | `xml_content` *(required)* |
 | `tally_create_ledger` | Create a new ledger master in Tally | `name`, `parent`, `opening_balance` |
 | `system_check_update` | Query GitHub Releases for available updates | *none* |

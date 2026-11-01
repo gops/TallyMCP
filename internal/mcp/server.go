@@ -130,6 +130,57 @@ func (s *Server) registerTools() {
 		s.handlers.HandleGetTrialBalance,
 	)
 
+	// tally_get_profit_and_loss
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_profit_and_loss",
+			mcp.WithDescription("Fetch the Profit & Loss statement (Revenue/Sales, COGS, Gross Profit, Indirect Expenses, Net Profit/Loss) for a given date range."),
+			mcp.WithString("from_date", mcp.Description("Start date in YYYYMMDD or YYYY-MM-DD format (e.g. '20240401')")),
+			mcp.WithString("to_date", mcp.Description("End date in YYYYMMDD or YYYY-MM-DD format (e.g. '20250331')")),
+		),
+		s.handlers.HandleGetProfitAndLoss,
+	)
+
+	// tally_get_balance_sheet
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_balance_sheet",
+			mcp.WithDescription("Fetch the Balance Sheet report (Liabilities: Capital, Loans, Sundry Creditors vs Assets: Fixed Assets, Current Assets, Bank/Cash, Sundry Debtors)."),
+			mcp.WithString("as_on_date", mcp.Description("Balance sheet as on date in YYYYMMDD or YYYY-MM-DD format (e.g. '20250331')")),
+			mcp.WithString("from_date", mcp.Description("Optional financial year start date in YYYYMMDD format (e.g. '20240401')")),
+		),
+		s.handlers.HandleGetBalanceSheet,
+	)
+
+	// tally_get_outstanding_receivables
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_outstanding_receivables",
+			mcp.WithDescription("Fetch the Bills Receivable aging report (pending dues / unpaid invoices from customers with bill dates, due dates, overdue days, and pending amounts)."),
+			mcp.WithString("party", mcp.Description("Optional customer / debtor ledger name to filter receivables")),
+			mcp.WithString("from_date", mcp.Description("Optional start date in YYYYMMDD format")),
+			mcp.WithString("to_date", mcp.Description("Optional end date in YYYYMMDD format")),
+		),
+		s.handlers.HandleGetOutstandingReceivables,
+	)
+
+	// tally_get_outstanding_payables
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_outstanding_payables",
+			mcp.WithDescription("Fetch the Bills Payable aging report (pending dues / unpaid bills to suppliers and vendors with bill dates, due dates, overdue days, and pending amounts)."),
+			mcp.WithString("party", mcp.Description("Optional supplier / creditor ledger name to filter payables")),
+			mcp.WithString("from_date", mcp.Description("Optional start date in YYYYMMDD format")),
+			mcp.WithString("to_date", mcp.Description("Optional end date in YYYYMMDD format")),
+		),
+		s.handlers.HandleGetOutstandingPayables,
+	)
+
+	// tally_get_daybook
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_daybook",
+			mcp.WithDescription("Fetch the Day Book report listing all accounting and inventory vouchers recorded on a specific calendar day."),
+			mcp.WithString("date", mcp.Description("The date in YYYYMMDD or YYYY-MM-DD format (e.g. '20240401')")),
+		),
+		s.handlers.HandleGetDayBook,
+	)
+
 	// 8. tally_execute_xml
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_execute_xml",

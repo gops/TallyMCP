@@ -191,6 +191,113 @@ func (h *ToolHandlers) HandleGetTrialBalance(ctx context.Context, req mcp.CallTo
 	return mcp.NewToolResultText(jsonStr), nil
 }
 
+// HandleGetProfitAndLoss returns the Profit & Loss statement.
+func (h *ToolHandlers) HandleGetProfitAndLoss(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	fromDate := req.GetString("from_date", "")
+	toDate := req.GetString("to_date", "")
+
+	pl, err := h.tallyClient.GetProfitAndLoss(ctx, fromDate, toDate)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get profit and loss: %v", err)), nil
+	}
+
+	jsonStr, err := tally.PrettyJSON(pl)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(jsonStr), nil
+}
+
+// HandleGetBalanceSheet returns the Balance Sheet report.
+func (h *ToolHandlers) HandleGetBalanceSheet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	asOnDate := req.GetString("as_on_date", "")
+	if asOnDate == "" {
+		asOnDate = req.GetString("to_date", "")
+	}
+	if asOnDate == "" {
+		asOnDate = req.GetString("date", "")
+	}
+	fromDate := req.GetString("from_date", "")
+
+	bs, err := h.tallyClient.GetBalanceSheet(ctx, asOnDate, fromDate)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get balance sheet: %v", err)), nil
+	}
+
+	jsonStr, err := tally.PrettyJSON(bs)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(jsonStr), nil
+}
+
+// HandleGetOutstandingReceivables returns the Bills Receivable aging report.
+func (h *ToolHandlers) HandleGetOutstandingReceivables(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	party := req.GetString("party", "")
+	if party == "" {
+		party = req.GetString("party_name", "")
+	}
+	if party == "" {
+		party = req.GetString("ledger_name", "")
+	}
+	fromDate := req.GetString("from_date", "")
+	toDate := req.GetString("to_date", "")
+
+	recv, err := h.tallyClient.GetOutstandingReceivables(ctx, party, fromDate, toDate)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get outstanding receivables: %v", err)), nil
+	}
+
+	jsonStr, err := tally.PrettyJSON(recv)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(jsonStr), nil
+}
+
+// HandleGetOutstandingPayables returns the Bills Payable aging report.
+func (h *ToolHandlers) HandleGetOutstandingPayables(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	party := req.GetString("party", "")
+	if party == "" {
+		party = req.GetString("party_name", "")
+	}
+	if party == "" {
+		party = req.GetString("ledger_name", "")
+	}
+	fromDate := req.GetString("from_date", "")
+	toDate := req.GetString("to_date", "")
+
+	pay, err := h.tallyClient.GetOutstandingPayables(ctx, party, fromDate, toDate)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get outstanding payables: %v", err)), nil
+	}
+
+	jsonStr, err := tally.PrettyJSON(pay)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(jsonStr), nil
+}
+
+// HandleGetDayBook returns all vouchers entered on a specific date.
+func (h *ToolHandlers) HandleGetDayBook(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	date := req.GetString("date", "")
+	if date == "" {
+		date = req.GetString("for_date", "")
+	}
+
+	db, err := h.tallyClient.GetDayBook(ctx, date)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get day book: %v", err)), nil
+	}
+
+	jsonStr, err := tally.PrettyJSON(db)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(jsonStr), nil
+}
+
 // HandleExecuteXML executes an arbitrary TDL or XML query.
 func (h *ToolHandlers) HandleExecuteXML(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	xmlContent, err := req.RequireString("xml_content")

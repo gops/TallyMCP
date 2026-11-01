@@ -454,6 +454,81 @@ func (c *Client) GetTrialBalance(ctx context.Context, fromDate, toDate string) (
 	return XMLToMap(raw)
 }
 
+// GetProfitAndLoss retrieves the Profit & Loss statement formatted as structured JSON.
+func (c *Client) GetProfitAndLoss(ctx context.Context, fromDate, toDate string) (map[string]any, error) {
+	xmlQuery, err := BuildProfitAndLossXML(c.defaultCompany, fromDate, toDate)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := c.ExecuteRawXML(ctx, xmlQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	return XMLToMap(raw)
+}
+
+// GetBalanceSheet retrieves the Balance Sheet report formatted as structured JSON.
+func (c *Client) GetBalanceSheet(ctx context.Context, asOnDate, fromDate string) (map[string]any, error) {
+	xmlQuery, err := BuildBalanceSheetXML(c.defaultCompany, asOnDate, fromDate)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := c.ExecuteRawXML(ctx, xmlQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	return XMLToMap(raw)
+}
+
+// GetOutstandingReceivables retrieves the Bills Receivable report formatted as structured JSON.
+func (c *Client) GetOutstandingReceivables(ctx context.Context, party, fromDate, toDate string) (map[string]any, error) {
+	xmlQuery, err := BuildBillsReceivableXML(c.defaultCompany, party, fromDate, toDate)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := c.ExecuteRawXML(ctx, xmlQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	return XMLToMap(raw)
+}
+
+// GetOutstandingPayables retrieves the Bills Payable report formatted as structured JSON.
+func (c *Client) GetOutstandingPayables(ctx context.Context, party, fromDate, toDate string) (map[string]any, error) {
+	xmlQuery, err := BuildBillsPayableXML(c.defaultCompany, party, fromDate, toDate)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := c.ExecuteRawXML(ctx, xmlQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	return XMLToMap(raw)
+}
+
+// GetDayBook retrieves the Day Book report formatted as structured JSON.
+func (c *Client) GetDayBook(ctx context.Context, date string) (map[string]any, error) {
+	xmlQuery, err := BuildDayBookXML(c.defaultCompany, date)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := c.ExecuteRawXML(ctx, xmlQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	return XMLToMap(raw)
+}
+
 // CreateLedger creates a new ledger master in Tally.
 func (c *Client) CreateLedger(ctx context.Context, name, parent string, openingBalance float64) (string, error) {
 	xmlQuery, err := BuildCreateLedgerXML(c.defaultCompany, name, parent, openingBalance)
