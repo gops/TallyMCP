@@ -14,8 +14,8 @@ import (
 func TestBuildQueries(t *testing.T) {
 	t.Run("BuildListCompaniesXML", func(t *testing.T) {
 		xml := tally.BuildListCompaniesXML()
-		if !strings.Contains(xml, "List of Companies") {
-			t.Errorf("expected 'List of Companies' in XML")
+		if !strings.Contains(xml, "<ID>Company</ID>") {
+			t.Errorf("expected '<ID>Company</ID>' in XML")
 		}
 	})
 

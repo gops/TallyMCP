@@ -157,6 +157,9 @@ func (c *Client) ListLedgers(ctx context.Context, group string) ([]LedgerItem, e
 					Ledger *LedgerItem `xml:"LEDGER"`
 				} `xml:"TALLYMESSAGE"`
 				Ledgers []LedgerItem `xml:"LEDGER"`
+				Collection struct {
+					Ledgers []LedgerItem `xml:"LEDGER"`
+				} `xml:"COLLECTION"`
 			} `xml:"DATA"`
 		} `xml:"BODY"`
 	}
@@ -173,6 +176,9 @@ func (c *Client) ListLedgers(ctx context.Context, group string) ([]LedgerItem, e
 	}
 	if len(result) == 0 && len(env.Body.Data.Ledgers) > 0 {
 		result = env.Body.Data.Ledgers
+	}
+	if len(result) == 0 && len(env.Body.Data.Collection.Ledgers) > 0 {
+		result = env.Body.Data.Collection.Ledgers
 	}
 
 	return result, nil
@@ -213,6 +219,9 @@ func (c *Client) ListStockItems(ctx context.Context, group string) ([]StockItemM
 					StockItem *StockItemModel `xml:"STOCKITEM"`
 				} `xml:"TALLYMESSAGE"`
 				StockItems []StockItemModel `xml:"STOCKITEM"`
+				Collection struct {
+					StockItems []StockItemModel `xml:"STOCKITEM"`
+				} `xml:"COLLECTION"`
 			} `xml:"DATA"`
 		} `xml:"BODY"`
 	}
@@ -229,6 +238,9 @@ func (c *Client) ListStockItems(ctx context.Context, group string) ([]StockItemM
 	}
 	if len(result) == 0 && len(env.Body.Data.StockItems) > 0 {
 		result = env.Body.Data.StockItems
+	}
+	if len(result) == 0 && len(env.Body.Data.Collection.StockItems) > 0 {
+		result = env.Body.Data.Collection.StockItems
 	}
 
 	return result, nil
@@ -254,6 +266,9 @@ func (c *Client) ListVouchers(ctx context.Context, voucherType, fromDate, toDate
 					Voucher *VoucherItem `xml:"VOUCHER"`
 				} `xml:"TALLYMESSAGE"`
 				Vouchers []VoucherItem `xml:"VOUCHER"`
+				Collection struct {
+					Vouchers []VoucherItem `xml:"VOUCHER"`
+				} `xml:"COLLECTION"`
 			} `xml:"DATA"`
 		} `xml:"BODY"`
 	}
@@ -270,6 +285,9 @@ func (c *Client) ListVouchers(ctx context.Context, voucherType, fromDate, toDate
 	}
 	if len(result) == 0 && len(env.Body.Data.Vouchers) > 0 {
 		result = env.Body.Data.Vouchers
+	}
+	if len(result) == 0 && len(env.Body.Data.Collection.Vouchers) > 0 {
+		result = env.Body.Data.Collection.Vouchers
 	}
 
 	return result, nil
