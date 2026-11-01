@@ -416,9 +416,10 @@ func printBanner(cfg *config.Config, configPath string, activePort int, portChan
 		if activePort == 0 {
 			port = "8080"
 		}
-		fmt.Println("\n  LAN MCP SSE Endpoints:")
+		fmt.Println("\n  LAN MCP Endpoints:")
 		for _, ip := range localIPs {
-			fmt.Printf("    -> http://%s:%s/sse\n", ip, port)
+			fmt.Printf("    -> Streamable HTTP: http://%s:%s/mcp  (Spec 2025-03-26)\n", ip, port)
+			fmt.Printf("    -> Legacy SSE:      http://%s:%s/sse\n", ip, port)
 		}
 	}
 	fmt.Println()

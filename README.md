@@ -32,11 +32,12 @@ A high-performance, **self-updating Windows executable** written in Go that acts
   - Non-intrusive notification in console and via MCP tools.
   - Safe Windows binary replacement in-place (renames locked `.exe` and cleans up `.old` on next start).
   - Can be triggered manually via `--update` or via the `system_apply_update` MCP tool.
-- 🌐 **Local Network MCP Server**:
-  - Exposes standard MCP over **HTTP Server-Sent Events (SSE)** on `0.0.0.0:8080`.
+- 🌐 **Dual Transport Local Network MCP Server**:
+  - Exposes **Streamable HTTP** (`/mcp`) according to the modern MCP specification (2025-03-26) alongside legacy **HTTP Server-Sent Events (SSE)** (`/sse`).
+  - Seamless out-of-the-box compatibility with Cursor, Windsurf, Claude Desktop, VS Code, and custom AI agents without requiring stdio bridges (`mcp-remote`).
   - Any authorized PC, Mac, or tablet on your local network can connect their AI agents.
-  - Optional API Key / Bearer token security.
-  - CORS enabled for web-based clients and dashboards.
+  - Optional API Key / Bearer token security (`Authorization: Bearer <key>` or `?token=<key>`).
+  - Full CORS enabled for browser-based AI dashboards and clients.
 - 📊 **Deep Tally ERP 9 & TallyPrime Integration**:
   - Check active connection and company details (`tally_status`, `tally_list_companies`).
   - Account ledgers with opening & closing balances and contact info (`tally_list_ledgers`, `tally_get_ledger`).
@@ -93,15 +94,44 @@ Upon first launch, `tally-mcp.exe` automatically generates a commented `config.y
   • Auth Security:  Disabled (Open LAN access)
   • GitHub Repo:    gops/TallyMCP
 
-  LAN MCP SSE Endpoints:
-    -> http://192.168.1.50:8080/sse
+  LAN MCP Endpoints:
+    -> Streamable HTTP: http://192.168.1.50:8080/mcp  (Spec 2025-03-26)
+    -> Legacy SSE:      http://192.168.1.50:8080/sse
 ```
 
 ---
 
-## 3. Connecting AI Clients (Claude Desktop, Cursor, Agents)
+## 3. Connecting AI Clients (Cursor, Claude Desktop, Windsurf, Custom Agents)
 
-### Claude Desktop Configuration
+### A. Streamable HTTP (Recommended for Cursor, Windsurf, & Modern MCP Clients)
+In Cursor, Windsurf, or your MCP client's configuration:
+
+```json
+{
+  "mcpServers": {
+    "tally": {
+      "url": "http://192.168.1.50:8080/mcp"
+    }
+  }
+}
+```
+
+If you enabled authentication in `config.yaml`:
+```json
+{
+  "mcpServers": {
+    "tally": {
+      "url": "http://192.168.1.50:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer your-secret-api-key"
+      }
+    }
+  }
+}
+```
+*(Or append `?token=your-secret-api-key` to the URL).*
+
+### B. Legacy SSE (Claude Desktop)
 Add the server to your Claude Desktop config (`%APPDATA%\Claude\claude_desktop_config.json` on Windows or `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
 
 ```json

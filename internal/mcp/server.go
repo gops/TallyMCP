@@ -180,7 +180,7 @@ func (s *Server) RunSSE(ctx context.Context) error {
 	return s.RunSSEWithListener(ctx, listener)
 }
 
-// RunSSEWithListener serves MCP over SSE using an already bound net.Listener.
+// RunSSEWithListener serves MCP over Streamable HTTP (/mcp) and SSE (/sse) using an already bound net.Listener.
 func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) error {
 	addr := listener.Addr().String()
 	_, portStr, _ := net.SplitHostPort(addr)
@@ -192,18 +192,33 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
 
 	// Disable localhost protection so other machines on the LAN can connect cleanly
 	sseServer := server.NewSSEServer(s.mcpServer, server.WithSSEDisableLocalhostProtection(true))
+	streamableServer := server.NewStreamableHTTPServer(s.mcpServer, server.WithDisableLocalhostProtection(true))
 
 	authMiddleware := auth.NewMiddleware(s.cfg.Auth)
 
 	mux := http.NewServeMux()
 
+	// Streamable HTTP endpoint (/mcp) - MCP Spec 2025-03-26
+	mux.Handle("/mcp", authMiddleware.Wrap(streamableServer))
+	mux.Handle("/mcp/", authMiddleware.Wrap(streamableServer))
+
+	// Legacy SSE endpoint (/sse and /message)
+	mux.Handle("/sse", authMiddleware.Wrap(sseServer))
+	mux.Handle("/message", authMiddleware.Wrap(sseServer))
+
 	// Health endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":    "ok",
-			"version":   s.version,
-			"transport": "sse",
+			"status":     "ok",
+			"version":    s.version,
+			"transport":  "streamable-http,sse",
+			"transports": []string{"streamable-http", "sse"},
+			"endpoints": map[string]string{
+				"streamable_http": "/mcp",
+				"sse":             "/sse",
+				"message":         "/message",
+			},
 			"port":      port,
 			"tally_url": s.tallyClient.BaseURL(),
 			"auth":      s.cfg.Auth.Enabled,
@@ -214,7 +229,7 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
 	// Web status / info page
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
-			// Forward other routes to SSE server (which handles /sse and /message)
+			// Forward unrecognized routes to SSE server for backwards compatibility
 			authMiddleware.Wrap(sseServer).ServeHTTP(w, r)
 			return
 		}
@@ -226,7 +241,7 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
   <title>Tally MCP Server</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 40px; background: #0f172a; color: #f8fafc; }
-    .card { background: #1e293b; border-radius: 12px; padding: 24px; max-width: 650px; margin: 0 auto; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); }
+    .card { background: #1e293b; border-radius: 12px; padding: 24px; max-width: 680px; margin: 0 auto; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); }
     h1 { margin-top: 0; color: #38bdf8; font-size: 24px; }
     .badge { display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: bold; background: #0284c7; color: #fff; margin-bottom: 16px; margin-right: 6px; }
     .port-badge { background: #10b981; }
@@ -245,7 +260,8 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
     
     <h3>Network Endpoints</h3>
     <ul>
-      <li><strong>MCP SSE Endpoint:</strong> <code>/sse</code></li>
+      <li><strong>Streamable HTTP Endpoint:</strong> <code>/mcp</code> <span style="color:#38bdf8;">(Recommended - MCP Spec 2025-03-26)</span></li>
+      <li><strong>MCP SSE Endpoint:</strong> <code>/sse</code> (Legacy SSE)</li>
       <li><strong>MCP Message Endpoint:</strong> <code>/message</code></li>
       <li><strong>Health Check:</strong> <code>/health</code></li>
     </ul>
@@ -256,7 +272,16 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
       <li><strong>Authentication:</strong> %s</li>
     </ul>
 
-    <h3>Claude Desktop / Cursor MCP Configuration:</h3>
+    <h3>Modern MCP Client Configuration (Cursor / Windsurf / VS Code):</h3>
+    <pre>{
+  "mcpServers": {
+    "tally": {
+      "url": "http://&lt;server-ip&gt;:%d/mcp"
+    }
+  }
+}</pre>
+
+    <h3>Legacy SSE Client Configuration (Claude Desktop):</h3>
     <pre>{
   "mcpServers": {
     "tally": {
@@ -271,7 +296,7 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
 				return "Enabled (API Key required)"
 			}
 			return "Disabled (Open LAN)"
-		}(), port)
+		}(), port, port)
 	})
 
 	httpServer := &http.Server{
@@ -281,7 +306,7 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
 	// Server shutdown channel
 	serverErr := make(chan error, 1)
 	go func() {
-		log.Printf("[INFO] MCP Server listening on http://%s (SSE: http://%s/sse)", addr, addr)
+		log.Printf("[INFO] MCP Server listening on http://%s (Streamable HTTP: http://%s/mcp, SSE: http://%s/sse)", addr, addr, addr)
 		if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			serverErr <- err
 		}

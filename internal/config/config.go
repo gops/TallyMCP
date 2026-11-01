@@ -160,7 +160,7 @@ func WriteDefaultConfigFile(path string) error {
 server:
   # Network address to listen on for MCP clients (0.0.0.0 allows any machine on LAN)
   listen_address: "0.0.0.0:8080"
-  # Transport mode: "sse" (HTTP Server-Sent Events for LAN) or "stdio" (Standard I/O)
+  # Transport mode: "sse" (HTTP mode exposing /mcp and /sse for LAN) or "stdio" (Standard I/O)
   transport: "sse"
 
 tally:

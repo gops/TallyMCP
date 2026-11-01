@@ -8,7 +8,7 @@ server:
   listen_address: "0.0.0.0:8080"
 
   # Transport mode:
-  # - "sse": HTTP Server-Sent Events (recommended for Local Network MCP access)
+  # - "sse": HTTP network mode (exposes both modern Streamable HTTP /mcp and legacy /sse)
   # - "stdio": Standard I/O (for local CLI / desktop agents spawning the exe directly)
   transport: "sse"
 
@@ -33,7 +33,7 @@ auth:
   # MCP clients can provide this via:
   #   1. Header: Authorization: Bearer <api_key>
   #   2. Header: X-API-Key: <api_key>
-  #   3. Query parameter: http://<ip>:8080/sse?token=<api_key>
+  #   3. Query parameter: http://<ip>:8080/mcp?token=<api_key> (or /sse?token=<api_key>)
   api_key: "change-this-to-a-secure-random-string"
 
 updater:
