@@ -6,10 +6,40 @@ dist/
 *.tmp
 *.zip
 *.tar.gz
+*.iso
+tally-mcp
 
-# Local configuration overrides
+# Local runtime configuration and secrets (CRITICAL: Do not remove)
 config.yaml
+config.yml
+config.local.yaml
+config.local.yml
+*.env
+*.env.*
+*.secret
 
-# OS files
+# Certificates, keys, and tokens
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+
+# Application logs and crash dumps
+*.log
+*.dump
+*.dmp
+
+# Editor and IDE directories
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Operating system files
 .DS_Store
 Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
