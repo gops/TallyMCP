@@ -18,6 +18,9 @@ jobs:
   build:
     name: Build and Release Binaries
     runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: 0
+      GOTOOLCHAIN: local
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -26,7 +29,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.23'
-          cache: true
+          cache: false
 
       - name: Extract Tag Version
         id: vars
@@ -39,14 +42,16 @@ jobs:
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "Building version ${TAG}"
 
+      - name: Prepare dist directory
+        run: mkdir -p dist
+
       - name: Build Windows amd64 Binary
         env:
-          CGO_ENABLED: 0
           GOOS: windows
           GOARCH: amd64
         run: |
           TAG="${{ steps.vars.outputs.tag }}"
-          go build -ldflags "-s -w -X main.Version=${TAG} -X main.Commit=${{ github.sha }} -X main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" -o dist/tally-mcp.exe ./cmd/tally-mcp
+          go build -mod=vendor -ldflags "-s -w -X main.Version=${TAG} -X main.Commit=${{ github.sha }} -X main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" -o dist/tally-mcp.exe ./cmd/tally-mcp
           cd dist
           zip tally-mcp-windows-amd64.zip tally-mcp.exe ../config.example.yaml ../README.md ../LICENSE
           cp tally-mcp.exe tally-mcp-windows-amd64.exe
@@ -54,12 +59,11 @@ jobs:
 
       - name: Build Windows arm64 Binary
         env:
-          CGO_ENABLED: 0
           GOOS: windows
           GOARCH: arm64
         run: |
           TAG="${{ steps.vars.outputs.tag }}"
-          go build -ldflags "-s -w -X main.Version=${TAG} -X main.Commit=${{ github.sha }} -X main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" -o dist/tally-mcp-arm64.exe ./cmd/tally-mcp
+          go build -mod=vendor -ldflags "-s -w -X main.Version=${TAG} -X main.Commit=${{ github.sha }} -X main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" -o dist/tally-mcp-arm64.exe ./cmd/tally-mcp
           cd dist
           zip tally-mcp-windows-arm64.zip tally-mcp-arm64.exe ../config.example.yaml ../README.md ../LICENSE
           cp tally-mcp-arm64.exe tally-mcp-windows-arm64.exe
@@ -67,26 +71,23 @@ jobs:
 
       - name: Build Linux amd64 Binary
         env:
-          CGO_ENABLED: 0
           GOOS: linux
           GOARCH: amd64
         run: |
           TAG="${{ steps.vars.outputs.tag }}"
-          go build -ldflags "-s -w -X main.Version=${TAG} -X main.Commit=${{ github.sha }} -X main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" -o dist/tally-mcp ./cmd/tally-mcp
+          go build -mod=vendor -ldflags "-s -w -X main.Version=${TAG} -X main.Commit=${{ github.sha }} -X main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" -o dist/tally-mcp ./cmd/tally-mcp
           cd dist
           tar -czf tally-mcp-linux-amd64.tar.gz tally-mcp ../config.example.yaml ../README.md ../LICENSE
           cp tally-mcp tally-mcp-linux-amd64
           cd ..
 
       - name: Build macOS (darwin) Binaries
-        env:
-          CGO_ENABLED: 0
         run: |
           TAG="${{ steps.vars.outputs.tag }}"
           # macOS Apple Silicon
-          GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w -X main.Version=${TAG} -X main.Commit=${{ github.sha }} -X main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" -o dist/tally-mcp-darwin-arm64 ./cmd/tally-mcp
+          GOOS=darwin GOARCH=arm64 go build -mod=vendor -ldflags "-s -w -X main.Version=${TAG} -X main.Commit=${{ github.sha }} -X main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" -o dist/tally-mcp-darwin-arm64 ./cmd/tally-mcp
           # macOS Intel
-          GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w -X main.Version=${TAG} -X main.Commit=${{ github.sha }} -X main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" -o dist/tally-mcp-darwin-amd64 ./cmd/tally-mcp
+          GOOS=darwin GOARCH=amd64 go build -mod=vendor -ldflags "-s -w -X main.Version=${TAG} -X main.Commit=${{ github.sha }} -X main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" -o dist/tally-mcp-darwin-amd64 ./cmd/tally-mcp
           cd dist
           tar -czf tally-mcp-darwin-arm64.tar.gz tally-mcp-darwin-arm64 ../config.example.yaml ../README.md ../LICENSE
           tar -czf tally-mcp-darwin-amd64.tar.gz tally-mcp-darwin-amd64 ../config.example.yaml ../README.md ../LICENSE
@@ -100,6 +101,8 @@ jobs:
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           name: Release ${{ steps.vars.outputs.tag }}
           tag_name: ${{ steps.vars.outputs.tag }}
