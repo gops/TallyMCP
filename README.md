@@ -42,6 +42,7 @@ Chat with your accounting data directly using natural language:
 ## Key Features
 
 - 🖥️ **Silent Windows System Tray App**: Runs quietly in the **Windows Notification Area** without an intrusive Command Prompt (`cmd.exe`) window. Right-click the tray icon to view active port status, open the web dashboard, edit configuration, or check for updates.
+- ▶️ **1-Click Tally Launcher & Auto-Start**: If Tally is closed or not running, start it directly from the tray menu (`▶️ Start Tally`), ask your AI to start it via the `tally_start` MCP tool, or set `auto_start: true` in `config.yaml` to automatically launch Tally when needed.
 - 🛡️ **1-Click Windows Firewall Setup**: Allow inbound connections across your office Wi-Fi or LAN with a single click from the tray menu (`🛡️ Allow through Windows Firewall`) or CLI (`--firewall allow`). Automatically handles Windows UAC elevation.
 - 🔌 **Automatic Port Conflict Resolution**: If port `8080` is busy, Tally MCP automatically discovers and binds the next free port (e.g. `8081`) and updates tray indicators and dashboard links accordingly.
 - 🚀 **Start with Windows**: Toggle automatic startup on Windows boot directly from the tray menu (`🚀 Start with Windows`) or CLI (`--startup enable`). Runs safely under your user profile without requiring admin privileges.
@@ -56,6 +57,7 @@ Chat with your accounting data directly using natural language:
   - Deep Voucher Drilldown with debits/credits, inventory items, batch details, and tax breakdowns (`tally_get_voucher`).
 - 📄 **On-Demand PDF Generation & Delivery**: Ask your AI to export any financial report or voucher invoice straight to PDF (`tally_generate_pdf`). Automatically saved locally and downloadable via HTTP (`/files/`).
 - ⚡ **Optimized for AI Speed & Safety**: Protects Tally from freezing using a single-query serializer and cooldown buffer. Master records (ledgers, stock items) are cached in memory for sub-millisecond responses.
+- 🎯 **TOON Format (40% - 60% Token Reduction)**: Supports **Token-Oriented Object Notation** (TOON) alongside JSON. By declaring object keys once in a header and streaming tabular records without braces or quotes, TOON cuts LLM prompt token costs by nearly half and doubles the amount of accounting data fitting into context windows. Enable server-wide or per-query.
 - 🔄 **Automatic Self-Updater**: Automatically notifies you when a newer version is released on GitHub. Update seamlessly in-place from the tray menu or CLI (`--update`).
 - 📜 **100% Free & Open Source**: Permissive [MIT License](./LICENSE).
 
@@ -93,6 +95,7 @@ Once launched, `tally-mcp.exe` sits quietly in your Windows Notification Area (b
 | Tray Menu Option | What It Does |
 |---|---|
 | **🟢 Tally MCP: Online (Port 8080)** | Shows connection status and active bound port. |
+| **▶️ Start Tally** | Launches Tally ERP 9 / TallyPrime in the background if stopped and connects to it. |
 | **🌐 Open Web Dashboard** | Opens the server status and health page in your browser. |
 | **⚙️ Open config.yaml** | Opens your configuration file in Notepad for quick editing. |
 | **🛡️ Allow through Windows Firewall** | Adds firewall rule allowing other LAN devices to connect. |
@@ -172,12 +175,13 @@ When connected, your AI assistant can automatically call these tools to fulfill 
 
 | Tool Name | What Your AI Uses It For | Example Prompt |
 |---|---|---|
-| `tally_status` | Verifies Tally connection health and open companies | *"Is Tally currently open and connected?"* |
+| `tally_status` | Verifies Tally connection health and open companies (can also auto-launch if stopped) | *"Is Tally currently open and connected?"* |
+| `tally_start` | Launches Tally ERP 9 / TallyPrime if not running and waits for the XML port to accept queries | *"Start Tally if it isn't running."* |
 | `tally_list_companies` | Lists all active companies loaded in Tally | *"Which companies are open in Tally right now?"* |
 | `tally_get_financial_summary` | Provides a quick KPI overview (Cash, Bank, Debtors, Creditors, Revenue, Profit) in < 350 tokens | *"Give me a high-level summary of our financials."* |
 | `tally_list_ledgers` | Searches and lists accounts (customers, vendors, banks, expenses) with balances | *"List all Sundry Debtors located in Maharashtra."* |
 | `tally_get_ledger` | Retrieves complete ledger details (address, credit limits, GST numbers, balance) | *"Show full contact and account info for ABC Corp."* |
-| `tally_list_vouchers` | Searches transactions by date range and voucher type (Sales, Purchase, Payment, Receipt) | *"Show all sales vouchers entered in October 2026."* |
+| `tally_list_vouchers` | Fast-filtered transaction lookup by party name, gross invoice amount (exact/range/tolerance), date range, voucher type, or free-text query with server-side TDL pushdown | *"Check if Roquette's 30,090 rs invoice is created"* or *"Show all sales vouchers entered in October 2026."* |
 | `tally_get_voucher` | Full transaction drilldown (all debit/credit legs, inventory items, batch numbers, tax breakdown) | *"Give me the full breakdown of Invoice #INV-1042."* |
 | `tally_get_stock_summary` | Checks inventory quantities, units, and stock valuations | *"What is our available stock for 100mm Pipes?"* |
 | `tally_get_trial_balance` | Retrieves the Trial Balance report with debits and credits | *"Fetch the current Trial Balance statement."* |
@@ -190,6 +194,8 @@ When connected, your AI assistant can automatically call these tools to fulfill 
 | `tally_create_ledger` | Creates a new account ledger in Tally | *"Create a new Sundry Debtor named Global Logistics."* |
 | `tally_execute_xml` | Runs custom raw XML / TDL queries against Tally | *(For power users and custom TDL scripts)* |
 
+> ⚡ **Targeted Query Acceleration & Safety**: `tally_list_vouchers` supports direct filtering by `party`, `amount` (with optional `amount_tolerance`), `min_amount`, `max_amount`, and `search`. Queries leverage native Tally date and type scoping while multi-attribute searches execute in high-speed Go memory—allowing your AI to verify specific invoices (e.g., *"Is Roquette's ₹30,090 invoice created?"*) in milliseconds with zero risk of Tally formula crashes.
+
 ---
 
 ## 5. Configuration (`config.yaml`)
@@ -201,6 +207,8 @@ server:
   # Network address to listen on ("0.0.0.0:8080" allows connections across your LAN)
   listen_address: "0.0.0.0:8080"
   transport: "sse"
+  # Default serialization format: "compact_json" (default) or "toon" (Token-Oriented Object Notation)
+  payload_format: "compact_json"
 
 tally:
   # Address where Tally is running (default port is 9000)
@@ -214,6 +222,10 @@ tally:
   throttle_ms: 15
   # In-memory cache duration for ledger and stock names
   cache_ttl_seconds: 30
+  # Optional path to tally.exe (leave empty to auto-detect standard TallyPrime / Tally ERP 9 folders)
+  exe_path: ""
+  # Automatically launch Tally if not running when an AI request arrives or on server start
+  auto_start: false
 
 auth:
   # Set to true if you want to require a password/token from AI clients
@@ -234,6 +246,7 @@ log:
 You can also override settings via environment variables:
 - `TALLY_URL`: e.g. `http://localhost:9000`
 - `TALLY_MCP_LISTEN`: e.g. `0.0.0.0:8080`
+- `TALLY_MCP_PAYLOAD_FORMAT`: e.g. `toon` or `compact_json`
 - `TALLY_MCP_API_KEY`: e.g. `your-secret-key`
 
 ---
@@ -258,6 +271,9 @@ tally-mcp.exe [flags]
 | `--firewall allow` | Add Windows Defender Firewall rule for port range `8080-8090` |
 | `--firewall remove` | Remove Tally MCP firewall rule |
 | `--firewall status` | Check if the firewall rule is currently active |
+| `--start-tally` | Launch Tally immediately if stopped, verify connection, and exit |
+| `--auto-start-tally` | Automatically launch Tally if stopped whenever an MCP request arrives |
+| `--tally-path <path>` | Specify custom file path to `tally.exe` |
 | `--version` | Display current version and build information |
 
 ---

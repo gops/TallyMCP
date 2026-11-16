@@ -236,6 +236,102 @@ func TestListVouchersPaginated(t *testing.T) {
 	}
 }
 
+func TestBuildFilteredListVouchersXML(t *testing.T) {
+	amount := 30090.0
+	tol := 1.0
+	opts := tally.VoucherFilterOptions{
+		VoucherType:     "Sales",
+		FromDate:        "2026-10-01",
+		ToDate:          "2026-10-31",
+		Party:           "Roquette",
+		Amount:          &amount,
+		AmountTolerance: &tol,
+		Search:          "INV",
+	}
+
+	xmlStr, err := tally.BuildFilteredListVouchersXML("MyCompany", opts)
+	if err != nil {
+		t.Fatalf("BuildFilteredListVouchersXML failed: %v", err)
+	}
+
+	// Strategy check: AllLedgerEntries.List.* should NOT be in the FETCH list
+	if strings.Contains(xmlStr, "AllLedgerEntries.List.*") {
+		t.Errorf("expected AllLedgerEntries.List.* to be stripped from list vouchers FETCH, got: %s", xmlStr)
+	}
+
+	// Safety check: StaticVariables should include date and voucher type
+	if !strings.Contains(xmlStr, "<VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>") {
+		t.Errorf("expected VOUCHERTYPENAME Sales in XML, got: %s", xmlStr)
+	}
+	if !strings.Contains(xmlStr, "<SVFROMDATE>20261001</SVFROMDATE>") {
+		t.Errorf("expected SVFROMDATE 20261001 in XML, got: %s", xmlStr)
+	}
+	if !strings.Contains(xmlStr, "<SVTODATE>20261031</SVTODATE>") {
+		t.Errorf("expected SVTODATE 20261031 in XML, got: %s", xmlStr)
+	}
+
+	// Anti-crash check: Dynamic TDL formulas should NOT be in XML to prevent Tally "Bad formula" crashes
+	if strings.Contains(xmlStr, "<FILTER>") || strings.Contains(xmlStr, "<SYSTEM TYPE=\"Formulae\"") {
+		t.Errorf("expected no dynamic TDL formulas in list vouchers XML to prevent Tally crashes, got: %s", xmlStr)
+	}
+}
+
+func TestFilterVouchersPaginated(t *testing.T) {
+	mockXML := `<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA>
+		<TALLYMESSAGE><VOUCHER>
+			<VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+			<VOUCHERNUMBER>INV-101</VOUCHERNUMBER>
+			<PARTYLEDGERNAME>Other Corp</PARTYLEDGERNAME>
+			<AMOUNT>-15000.00</AMOUNT>
+			<DATE>20261101</DATE>
+		</VOUCHER></TALLYMESSAGE>
+		<TALLYMESSAGE><VOUCHER>
+			<VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+			<VOUCHERNUMBER>INV-102</VOUCHERNUMBER>
+			<PARTYLEDGERNAME>Roquette India Pvt Ltd</PARTYLEDGERNAME>
+			<AMOUNT>-30090.00</AMOUNT>
+			<DATE>20261101</DATE>
+		</VOUCHER></TALLYMESSAGE>
+		<TALLYMESSAGE><VOUCHER>
+			<VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+			<VOUCHERNUMBER>INV-103</VOUCHERNUMBER>
+			<PARTYLEDGERNAME>Roquette India Pvt Ltd</PARTYLEDGERNAME>
+			<AMOUNT>-50000.00</AMOUNT>
+			<DATE>20261102</DATE>
+		</VOUCHER></TALLYMESSAGE>
+	</DATA></BODY></ENVELOPE>`
+
+	client := tally.NewClient(config.TallyConfig{
+		URL: "http://mock-tally:9000",
+	})
+	client.SetTransport(roundTripFunc(func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/xml;charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader(mockXML)),
+		}
+	}))
+
+	ctx := context.Background()
+
+	// Query for Roquette with exact amount 30090
+	amt := 30090.0
+	res, err := client.FilterVouchersPaginated(ctx, tally.VoucherFilterOptions{
+		Party:  "Roquette",
+		Amount: &amt,
+	})
+	if err != nil {
+		t.Fatalf("FilterVouchersPaginated failed: %v", err)
+	}
+
+	if res.Total != 1 {
+		t.Errorf("expected 1 matching voucher for Roquette with amount 30090, got %d", res.Total)
+	}
+	if len(res.Vouchers) != 1 || res.Vouchers[0].VoucherNumber != "INV-102" {
+		t.Errorf("expected voucher INV-102, got: %+v", res.Vouchers)
+	}
+}
+
 func TestBuildGetVoucherXML(t *testing.T) {
 	xml1, err := tally.BuildGetVoucherXML("MyCompany", "1042", "", "", "")
 	if err != nil {
@@ -254,6 +350,157 @@ func TestBuildGetVoucherXML(t *testing.T) {
 	}
 	if !strings.Contains(xml2, `$VoucherTypeName = "Sales"`) {
 		t.Errorf("expected VoucherTypeName filter in XML, got: %s", xml2)
+	}
+
+	// Safety check: both masterID and voucherNumber empty should return error
+	if _, err := tally.BuildGetVoucherXML("MyCompany", "", "", "", ""); err == nil {
+		t.Error("expected error when both masterID and voucherNumber are empty")
+	}
+
+	// Safety check: double quotes in voucher number should be stripped to avoid TDL syntax error
+	xml3, err := tally.BuildGetVoucherXML("MyCompany", "", "INV-\"102\"", "Sales", "")
+	if err != nil {
+		t.Fatalf("BuildGetVoucherXML failed: %v", err)
+	}
+	if !strings.Contains(xml3, `$VoucherNumber = "INV-102"`) {
+		t.Errorf("expected sanitized VoucherNumber filter, got: %s", xml3)
+	}
+
+	// Anti-crash check: non-numeric masterID must be rejected
+	if _, err := tally.BuildGetVoucherXML("MyCompany", "invalid_id_not_numeric", "", "", ""); err == nil {
+		t.Error("expected error for non-numeric masterID to prevent TDL 'Bad formula' crash")
+	}
+
+	// Anti-crash check: GUID masterID should be recognized and mapped to $Guid
+	xmlGUID, err := tally.BuildGetVoucherXML("MyCompany", "12345678-1234-1234-1234-123456789abc", "", "", "")
+	if err != nil {
+		t.Fatalf("BuildGetVoucherXML failed for GUID: %v", err)
+	}
+	if !strings.Contains(xmlGUID, `$Guid = "12345678-1234-1234-1234-123456789abc"`) {
+		t.Errorf("expected $Guid in XML for UUID, got: %s", xmlGUID)
+	}
+
+	// Anti-crash check: special characters in voucher number (e.g. '&') should be properly XML-escaped
+	xmlSpecial, err := tally.BuildGetVoucherXML("MyCompany", "", "INV & 102", "Sales & Service", "")
+	if err != nil {
+		t.Fatalf("BuildGetVoucherXML failed for special chars: %v", err)
+	}
+	if !strings.Contains(xmlSpecial, `$VoucherNumber = "INV &amp; 102"`) {
+		t.Errorf("expected escaped '&amp;' in VoucherNumber filter, got: %s", xmlSpecial)
+	}
+	if !strings.Contains(xmlSpecial, `$VoucherTypeName = "Sales &amp; Service"`) {
+		t.Errorf("expected escaped '&amp;' in VoucherTypeName filter, got: %s", xmlSpecial)
+	}
+}
+
+func TestBuildGetLedgerXML(t *testing.T) {
+	// Safety check: empty ledger name should return error
+	if _, err := tally.BuildGetLedgerXML("MyCompany", "   "); err == nil {
+		t.Error("expected error for empty ledger name")
+	}
+
+	// Safety check: quotes in ledger name should be stripped to avoid TDL syntax error
+	xmlStr, err := tally.BuildGetLedgerXML("MyCompany", "14\" Monitor Sales")
+	if err != nil {
+		t.Fatalf("BuildGetLedgerXML failed: %v", err)
+	}
+	if !strings.Contains(xmlStr, `$Name = "14 Monitor Sales"`) {
+		t.Errorf("expected sanitized ledger name, got: %s", xmlStr)
+	}
+
+	// Safety check: ampersands and special characters in company and ledger name should be XML-escaped
+	xmlSpecial, err := tally.BuildGetLedgerXML("A & B Corp", "Smith & Jones Ltd")
+	if err != nil {
+		t.Fatalf("BuildGetLedgerXML failed for ampersand: %v", err)
+	}
+	if !strings.Contains(xmlSpecial, "<SVCURRENTCOMPANY>A &amp; B Corp</SVCURRENTCOMPANY>") {
+		t.Errorf("expected escaped company name, got: %s", xmlSpecial)
+	}
+	if !strings.Contains(xmlSpecial, `$Name = "Smith &amp; Jones Ltd"`) {
+		t.Errorf("expected escaped ledger name in formula, got: %s", xmlSpecial)
+	}
+}
+
+func TestValidateAndSanitizeTallyXML(t *testing.T) {
+	// 1. Empty XML check
+	if _, err := tally.ValidateAndSanitizeTallyXML(""); err == nil {
+		t.Error("expected error for empty XML")
+	}
+
+	// 2. Missing envelope
+	if _, err := tally.ValidateAndSanitizeTallyXML("<BODY></BODY>"); err == nil {
+		t.Error("expected error for missing <ENVELOPE>")
+	}
+
+	// 3. Malformed XML (unclosed tag / raw '<' inside formula)
+	malformedXML := `<ENVELOPE><HEADER><TALLYREQUEST>Export</TALLYREQUEST></HEADER><BODY><DESC><TDL><TDLMESSAGE>
+		<SYSTEM TYPE="Formulae" NAME="BadFilter">$Amount <= 500</SYSTEM>
+	</TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>`
+	if _, err := tally.ValidateAndSanitizeTallyXML(malformedXML); err == nil {
+		t.Error("expected error for raw '<' inside XML element")
+	}
+
+	// 4. Empty TDL formula
+	emptyFormulaXML := `<ENVELOPE><HEADER><TALLYREQUEST>Export</TALLYREQUEST></HEADER><BODY><DESC><TDL><TDLMESSAGE>
+		<COLLECTION NAME="C"><FILTER>F</FILTER></COLLECTION>
+		<SYSTEM TYPE="Formulae" NAME="F">   </SYSTEM>
+	</TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>`
+	if _, err := tally.ValidateAndSanitizeTallyXML(emptyFormulaXML); err == nil {
+		t.Error("expected error for empty formula")
+	}
+
+	// 5. Unbalanced double quotes in formula
+	unbalancedQuoteXML := `<ENVELOPE><HEADER><TALLYREQUEST>Export</TALLYREQUEST></HEADER><BODY><DESC><TDL><TDLMESSAGE>
+		<SYSTEM TYPE="Formulae" NAME="F">$Name = "Unclosed string</SYSTEM>
+	</TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>`
+	if _, err := tally.ValidateAndSanitizeTallyXML(unbalancedQuoteXML); err == nil {
+		t.Error("expected error for unbalanced quotes")
+	}
+
+	// 6. Unbalanced parentheses in formula
+	unbalancedParenXML := `<ENVELOPE><HEADER><TALLYREQUEST>Export</TALLYREQUEST></HEADER><BODY><DESC><TDL><TDLMESSAGE>
+		<SYSTEM TYPE="Formulae" NAME="F">($Amount > 100 AND ($Rate < 50)</SYSTEM>
+	</TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>`
+	if _, err := tally.ValidateAndSanitizeTallyXML(unbalancedParenXML); err == nil {
+		t.Error("expected error for unbalanced parentheses")
+	}
+
+	// 7. Invalid '==' operator in formula
+	doubleEqualsXML := `<ENVELOPE><HEADER><TALLYREQUEST>Export</TALLYREQUEST></HEADER><BODY><DESC><TDL><TDLMESSAGE>
+		<SYSTEM TYPE="Formulae" NAME="F">$Name == "Test"</SYSTEM>
+	</TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>`
+	if _, err := tally.ValidateAndSanitizeTallyXML(doubleEqualsXML); err == nil {
+		t.Error("expected error for '==' operator")
+	}
+
+	// 8. Unsupported $$Abs on compound Amount
+	absAmountXML := `<ENVELOPE><HEADER><TALLYREQUEST>Export</TALLYREQUEST></HEADER><BODY><DESC><TDL><TDLMESSAGE>
+		<SYSTEM TYPE="Formulae" NAME="F">$$Abs:$Amount &gt; 100</SYSTEM>
+	</TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>`
+	if _, err := tally.ValidateAndSanitizeTallyXML(absAmountXML); err == nil {
+		t.Error("expected error for $$Abs on Amount")
+	}
+
+	// 9. Unmatched collection filter referencing undefined formula
+	unmatchedFilterXML := `<ENVELOPE><HEADER><TALLYREQUEST>Export</TALLYREQUEST></HEADER><BODY><DESC><TDL><TDLMESSAGE>
+		<COLLECTION NAME="C"><FILTER>NonExistentFilter</FILTER></COLLECTION>
+		<SYSTEM TYPE="Formulae" NAME="OtherFilter">$Name = "Test"</SYSTEM>
+	</TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>`
+	if _, err := tally.ValidateAndSanitizeTallyXML(unmatchedFilterXML); err == nil {
+		t.Error("expected error for unmatched filter reference")
+	}
+
+	// 10. Valid envelope with properly escaped formula
+	validXML := `<ENVELOPE><HEADER><TALLYREQUEST>Export</TALLYREQUEST></HEADER><BODY><DESC><TDL><TDLMESSAGE>
+		<COLLECTION NAME="C"><FILTER>VoucherFilter</FILTER></COLLECTION>
+		<SYSTEM TYPE="Formulae" NAME="VoucherFilter">$VoucherNumber = "INV &amp; 102"</SYSTEM>
+	</TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>`
+	cleaned, err := tally.ValidateAndSanitizeTallyXML(validXML)
+	if err != nil {
+		t.Fatalf("expected valid XML to pass, got error: %v", err)
+	}
+	if !strings.Contains(cleaned, "VoucherFilter") {
+		t.Errorf("expected cleaned XML to preserve VoucherFilter, got: %s", cleaned)
 	}
 }
 

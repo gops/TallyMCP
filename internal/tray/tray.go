@@ -14,6 +14,7 @@ type Config struct {
 	TallyURL      string
 	ConfigPath    string
 	GitHubRepo    string
+	OnStartTally  func(ctx context.Context) (status, msg string, err error)
 	OnCheckUpdate func(ctx context.Context) (hasUpdate bool, newVersion string, releaseNotes string, err error)
 	OnApplyUpdate func(ctx context.Context, progressFn func(downloaded, total int64)) error
 	OnQuit        func()

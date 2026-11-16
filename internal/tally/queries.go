@@ -125,7 +125,7 @@ const listVouchersTemplate = `<ENVELOPE>
         <TDLMESSAGE>
           <COLLECTION NAME="VoucherColl" ISMODIFY="No" ISFIXED="No">
             <TYPE>Voucher</TYPE>
-            <FETCH>Date, VoucherTypeName, VoucherNumber, Reference, PartyLedgerName, Amount, Narration, AllLedgerEntries.List.*</FETCH>
+            <FETCH>Date, VoucherTypeName, VoucherNumber, Reference, PartyLedgerName, Amount, Narration, MasterId</FETCH>
           </COLLECTION>
         </TDLMESSAGE>
       </TDL>
@@ -154,7 +154,7 @@ const getVoucherTemplate = `<ENVELOPE>
             <FILTER>VoucherFilter</FILTER>
             <FETCH>Date, EffectiveDate, VoucherTypeName, VoucherNumber, Reference, ReferenceDate, PartyLedgerName, PartyName, Amount, Narration, MasterId, Guid, AllLedgerEntries.List.*, LedgerEntries.List.*, AllLedgerEntries.BillAllocations.List.*, AllLedgerEntries.BankAllocations.List.*, AllInventoryEntries.List.*, InventoryEntries.List.*, AllInventoryEntries.BatchAllocations.List.*, AllInventoryEntries.AccountingAllocations.List.*</FETCH>
           </COLLECTION>
-          <SYSTEM TYPE="Formulae" NAME="VoucherFilter">{{if .MasterID}}$MasterId = {{.MasterID}}{{else if .VoucherNumber}}$VoucherNumber = "{{.VoucherNumber}}"{{if .VoucherType}} AND $VoucherTypeName = "{{.VoucherType}}"{{end}}{{end}}</SYSTEM>
+          <SYSTEM TYPE="Formulae" NAME="VoucherFilter">{{.VoucherFilterFormula}}</SYSTEM>
         </TDLMESSAGE>
       </TDL>
     </DESC>
@@ -345,6 +345,33 @@ func executeTemplate(name, tmplStr string, data any) (string, error) {
 	return buf.String(), nil
 }
 
+// isDigitsOnly checks if a string contains exclusively ASCII digits.
+func isDigitsOnly(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isUUID checks if a string matches UUID format (32 hex characters, with or without hyphens).
+func isUUID(s string) bool {
+	clean := strings.ReplaceAll(s, "-", "")
+	if len(clean) != 32 {
+		return false
+	}
+	for _, r := range clean {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
 // BuildListCompaniesXML generates the XML for exporting all loaded companies.
 func BuildListCompaniesXML() string {
 	return listCompaniesTemplate
@@ -353,24 +380,29 @@ func BuildListCompaniesXML() string {
 // BuildListLedgersXML generates the XML for exporting ledgers, optionally filtered by group.
 func BuildListLedgersXML(company, group string) (string, error) {
 	return executeTemplate("listLedgers", listLedgersTemplate, map[string]string{
-		"Company": company,
-		"Group":   group,
+		"Company": XMLEscapeText(company),
+		"Group":   XMLEscapeText(group),
 	})
 }
 
-// BuildGetLedgerXML generates the XML to fetch a specific ledger by name.
+// BuildGetLedgerXML generates the XML to fetch a specific ledger by name safely.
+// Strips double quotes and control characters to prevent TDL syntax corruption.
 func BuildGetLedgerXML(company, ledgerName string) (string, error) {
+	cleanName := SanitizeTDLString(ledgerName)
+	if cleanName == "" {
+		return "", fmt.Errorf("ledger name must not be empty")
+	}
 	return executeTemplate("getLedger", getLedgerTemplate, map[string]string{
-		"Company":    company,
-		"LedgerName": ledgerName,
+		"Company":    XMLEscapeText(company),
+		"LedgerName": XMLEscapeText(cleanName),
 	})
 }
 
 // BuildListStockItemsXML generates the XML for exporting inventory stock items.
 func BuildListStockItemsXML(company, group string) (string, error) {
 	return executeTemplate("listStockItems", listStockItemsTemplate, map[string]string{
-		"Company": company,
-		"Group":   group,
+		"Company": XMLEscapeText(company),
+		"Group":   XMLEscapeText(group),
 	})
 }
 
@@ -384,29 +416,65 @@ func CleanDate(d string) string {
 
 // BuildListVouchersXML generates the XML for exporting vouchers with optional date and type filters.
 func BuildListVouchersXML(company, voucherType, fromDate, toDate string) (string, error) {
-	return executeTemplate("listVouchers", listVouchersTemplate, map[string]string{
-		"Company":     company,
-		"VoucherType": voucherType,
-		"FromDate":    CleanDate(fromDate),
-		"ToDate":      CleanDate(toDate),
+	return BuildFilteredListVouchersXML(company, VoucherFilterOptions{
+		VoucherType: voucherType,
+		FromDate:    fromDate,
+		ToDate:      toDate,
 	})
 }
 
-// BuildGetVoucherXML generates the XML for exporting a single voucher drilldown.
+// BuildFilteredListVouchersXML generates the XML for exporting vouchers scoped safely by date range and type.
+// Multi-attribute searches (party, amount tolerance, narration, reference) are processed cleanly in Go memory
+// to prevent brittle TDL formula compilation errors ("Bad formula") from crashing Tally.
+func BuildFilteredListVouchersXML(company string, opts VoucherFilterOptions) (string, error) {
+	data := map[string]any{
+		"Company":     XMLEscapeText(company),
+		"VoucherType": XMLEscapeText(opts.VoucherType),
+		"FromDate":    CleanDate(opts.FromDate),
+		"ToDate":      CleanDate(opts.ToDate),
+	}
+
+	return executeTemplate("listVouchers", listVouchersTemplate, data)
+}
+
+// BuildGetVoucherXML generates the XML for exporting a single voucher drilldown safely.
+// Validates types and strictly constructs TDL formulas to eliminate "Bad formula" crashes.
 func BuildGetVoucherXML(company, masterID, voucherNumber, voucherType, date string) (string, error) {
+	cleanMasterID := strings.TrimSpace(masterID)
+	cleanVoucherNumber := SanitizeTDLString(voucherNumber)
+	cleanVoucherType := SanitizeTDLString(voucherType)
+
+	var formula string
+	if cleanMasterID != "" {
+		// Strict validation: MasterID in Tally is numeric. Passing non-digits into $MasterId = ...
+		// causes Tally's C++ core to fail compilation and terminate with "Can not understand, bad formula".
+		if isDigitsOnly(cleanMasterID) {
+			formula = fmt.Sprintf("$MasterId = %s", cleanMasterID)
+		} else if isUUID(cleanMasterID) {
+			formula = fmt.Sprintf("$Guid = %q", cleanMasterID)
+		} else {
+			return "", fmt.Errorf("invalid master_id %q: must contain only digits or valid GUID to prevent Tally 'Bad formula' crashes", masterID)
+		}
+	} else if cleanVoucherNumber != "" {
+		formula = fmt.Sprintf("$VoucherNumber = %q", cleanVoucherNumber)
+		if cleanVoucherType != "" {
+			formula += fmt.Sprintf(" AND $VoucherTypeName = %q", cleanVoucherType)
+		}
+	} else {
+		return "", fmt.Errorf("either master_id or voucher_number must be provided to fetch a voucher")
+	}
+
 	return executeTemplate("getVoucher", getVoucherTemplate, map[string]string{
-		"Company":       company,
-		"MasterID":      strings.TrimSpace(masterID),
-		"VoucherNumber": strings.TrimSpace(voucherNumber),
-		"VoucherType":   strings.TrimSpace(voucherType),
-		"Date":          CleanDate(date),
+		"Company":              XMLEscapeText(company),
+		"Date":                 CleanDate(date),
+		"VoucherFilterFormula": XMLEscapeText(formula),
 	})
 }
 
 // BuildTrialBalanceXML generates the XML for exporting Trial Balance.
 func BuildTrialBalanceXML(company, fromDate, toDate string) (string, error) {
 	return executeTemplate("trialBalance", trialBalanceTemplate, map[string]string{
-		"Company":  company,
+		"Company":  XMLEscapeText(company),
 		"FromDate": CleanDate(fromDate),
 		"ToDate":   CleanDate(toDate),
 	})
@@ -414,10 +482,18 @@ func BuildTrialBalanceXML(company, fromDate, toDate string) (string, error) {
 
 // BuildCreateLedgerXML generates the XML for creating a new ledger in Tally.
 func BuildCreateLedgerXML(company, name, parent string, openingBalance float64) (string, error) {
+	cleanName := SanitizeTDLString(name)
+	if cleanName == "" {
+		return "", fmt.Errorf("ledger name cannot be empty")
+	}
+	cleanParent := SanitizeTDLString(parent)
+	if cleanParent == "" {
+		return "", fmt.Errorf("parent group cannot be empty")
+	}
 	return executeTemplate("createLedger", createLedgerTemplate, map[string]any{
-		"Company":        company,
-		"Name":           name,
-		"Parent":         parent,
+		"Company":        XMLEscapeText(company),
+		"Name":           XMLEscapeAttr(cleanName),
+		"Parent":         XMLEscapeText(cleanParent),
 		"OpeningBalance": openingBalance,
 	})
 }
@@ -425,7 +501,7 @@ func BuildCreateLedgerXML(company, name, parent string, openingBalance float64) 
 // BuildProfitAndLossXML generates the XML for exporting the Profit and Loss statement.
 func BuildProfitAndLossXML(company, fromDate, toDate string) (string, error) {
 	return executeTemplate("profitAndLoss", profitAndLossTemplate, map[string]string{
-		"Company":  company,
+		"Company":  XMLEscapeText(company),
 		"FromDate": CleanDate(fromDate),
 		"ToDate":   CleanDate(toDate),
 	})
@@ -434,7 +510,7 @@ func BuildProfitAndLossXML(company, fromDate, toDate string) (string, error) {
 // BuildBalanceSheetXML generates the XML for exporting the Balance Sheet statement.
 func BuildBalanceSheetXML(company, asOnDate, fromDate string) (string, error) {
 	return executeTemplate("balanceSheet", balanceSheetTemplate, map[string]string{
-		"Company":  company,
+		"Company":  XMLEscapeText(company),
 		"AsOnDate": CleanDate(asOnDate),
 		"FromDate": CleanDate(fromDate),
 	})
@@ -443,8 +519,8 @@ func BuildBalanceSheetXML(company, asOnDate, fromDate string) (string, error) {
 // BuildBillsReceivableXML generates the XML for exporting the Bills Receivable report.
 func BuildBillsReceivableXML(company, party, fromDate, toDate string) (string, error) {
 	return executeTemplate("billsReceivable", billsReceivableTemplate, map[string]string{
-		"Company":  company,
-		"Party":    strings.TrimSpace(party),
+		"Company":  XMLEscapeText(company),
+		"Party":    XMLEscapeText(SanitizeTDLString(party)),
 		"FromDate": CleanDate(fromDate),
 		"ToDate":   CleanDate(toDate),
 	})
@@ -453,8 +529,8 @@ func BuildBillsReceivableXML(company, party, fromDate, toDate string) (string, e
 // BuildBillsPayableXML generates the XML for exporting the Bills Payable report.
 func BuildBillsPayableXML(company, party, fromDate, toDate string) (string, error) {
 	return executeTemplate("billsPayable", billsPayableTemplate, map[string]string{
-		"Company":  company,
-		"Party":    strings.TrimSpace(party),
+		"Company":  XMLEscapeText(company),
+		"Party":    XMLEscapeText(SanitizeTDLString(party)),
 		"FromDate": CleanDate(fromDate),
 		"ToDate":   CleanDate(toDate),
 	})
@@ -463,7 +539,7 @@ func BuildBillsPayableXML(company, party, fromDate, toDate string) (string, erro
 // BuildDayBookXML generates the XML for exporting the Day Book report.
 func BuildDayBookXML(company, date string) (string, error) {
 	return executeTemplate("dayBook", dayBookTemplate, map[string]string{
-		"Company": company,
+		"Company": XMLEscapeText(company),
 		"Date":    CleanDate(date),
 	})
 }
@@ -499,15 +575,15 @@ func NormalizeReportID(reportType string) string {
 // BuildExportPDFXML generates the XML telling Tally to export a report or voucher directly to a PDF file on disk.
 func BuildExportPDFXML(company, reportID, exportLocation, printFileName, fromDate, toDate, date, party, voucherNo, voucherType string) (string, error) {
 	return executeTemplate("exportPDF", exportPDFTemplate, map[string]string{
-		"Company":        company,
+		"Company":        XMLEscapeText(company),
 		"ReportID":       NormalizeReportID(reportID),
-		"ExportLocation": strings.TrimSpace(exportLocation),
-		"PrintFileName":  strings.TrimSpace(printFileName),
+		"ExportLocation": XMLEscapeText(strings.TrimSpace(exportLocation)),
+		"PrintFileName":  XMLEscapeText(strings.TrimSpace(printFileName)),
 		"FromDate":       CleanDate(fromDate),
 		"ToDate":         CleanDate(toDate),
 		"Date":           CleanDate(date),
-		"Party":          strings.TrimSpace(party),
-		"VoucherNo":      strings.TrimSpace(voucherNo),
-		"VoucherType":    strings.TrimSpace(voucherType),
+		"Party":          XMLEscapeText(SanitizeTDLString(party)),
+		"VoucherNo":      XMLEscapeText(SanitizeTDLString(voucherNo)),
+		"VoucherType":    XMLEscapeText(SanitizeTDLString(voucherType)),
 	})
 }

@@ -50,6 +50,9 @@ func main() {
 	startupFlag := flag.String("startup", "", "Configure startup with Windows: enable, disable, or status")
 	firewallFlag := flag.String("firewall", "", "Configure Windows Firewall rule: allow, remove, or status")
 	initConfigFlag := flag.Bool("init-config", false, "Generate a default config.yaml in the current directory and exit")
+	autoStartTallyFlag := flag.Bool("auto-start-tally", false, "Automatically start Tally ERP/Prime if not running")
+	tallyPathFlag := flag.String("tally-path", "", "Path to tally.exe executable (e.g. C:\\Program Files\\TallyPrime\\tally.exe)")
+	startTallyFlag := flag.Bool("start-tally", false, "Start Tally immediately if not running and exit")
 
 	flag.Parse()
 
@@ -152,6 +155,38 @@ func main() {
 	}
 	if *repoFlag != "" {
 		cfg.Updater.GitHubRepo = *repoFlag
+	}
+	if *autoStartTallyFlag {
+		cfg.Tally.AutoStart = true
+	}
+	if *tallyPathFlag != "" {
+		cfg.Tally.ExePath = *tallyPathFlag
+	}
+
+	// Handle start-tally flag
+	if *startTallyFlag {
+		targetPath := *tallyPathFlag
+		if targetPath == "" {
+			targetPath = cfg.Tally.ExePath
+		}
+		fmt.Printf("Checking Tally connection at %s...\n", cfg.Tally.URL)
+		tallyClient := tally.NewClient(cfg.Tally)
+		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		defer cancel()
+
+		res, err := tallyClient.StartTally(ctx, targetPath, 30*time.Second)
+		if err != nil {
+			log.Fatalf("[ERROR] Failed to start Tally: %v", err)
+		}
+		if res.Status == "already_running" {
+			fmt.Printf("Tally is already running and responding at %s (%d loaded companies)\n", cfg.Tally.URL, res.CompaniesCount)
+		} else {
+			fmt.Printf("Tally started successfully! Connected at %s (%d loaded companies)\n", cfg.Tally.URL, res.CompaniesCount)
+			if res.ExePath != "" {
+				fmt.Printf("Executable: %s\n", res.ExePath)
+			}
+		}
+		return
 	}
 
 	// Handle check-update flag
@@ -273,7 +308,25 @@ func main() {
 		defer cancel()
 		status, err := tallyClient.Ping(ctx)
 		if err != nil {
-			log.Printf("[WARN] Tally connection check: Tally ERP is not responding at %s. Please ensure Tally is open and server port 9000 is enabled.", cfg.Tally.URL)
+			log.Printf("[WARN] Tally connection check: Tally ERP is not responding at %s.", cfg.Tally.URL)
+			if cfg.Tally.AutoStart {
+				log.Printf("[INFO] Auto-start is enabled. Attempting to launch Tally ERP / TallyPrime...")
+				startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer startCancel()
+				res, startErr := tallyClient.EnsureRunning(startCtx, 30*time.Second)
+				if startErr != nil {
+					log.Printf("[WARN] Auto-start failed: %v", startErr)
+				} else if res.Connected {
+					log.Printf("[INFO] Tally auto-started successfully! (%d loaded companies found)", res.CompaniesCount)
+				}
+			} else {
+				exe, findErr := tallyClient.FindExecutable("")
+				if findErr == nil && exe != "" {
+					log.Printf("[INFO] Discovered Tally executable at: %s (Right-click tray -> 'Start Tally', pass --auto-start-tally, or call 'tally_start' tool)", exe)
+				} else {
+					log.Printf("[INFO] Please ensure Tally is open and server port 9000 is enabled.")
+				}
+			}
 		} else {
 			log.Printf("[INFO] Connected to Tally ERP! (%d loaded companies found)", status.CompaniesCount)
 		}
@@ -331,6 +384,13 @@ func main() {
 		TallyURL:     cfg.Tally.URL,
 		ConfigPath:   configPath,
 		GitHubRepo:   cfg.Updater.GitHubRepo,
+		OnStartTally: func(c context.Context) (string, string, error) {
+			res, err := tallyClient.StartTally(c, "", 30*time.Second)
+			if err != nil {
+				return "error", err.Error(), err
+			}
+			return res.Status, res.Message, nil
+		},
 		OnCheckUpdate: func(c context.Context) (bool, string, string, error) {
 			info, err := updater.CheckForUpdate(c, Version, cfg.Updater.GitHubRepo)
 			if err != nil {
@@ -401,6 +461,9 @@ func printBanner(cfg *config.Config, configPath string, activePort int, portChan
 		fmt.Printf("  • Auth Security:  Enabled (API key required)\n")
 	} else {
 		fmt.Printf("  • Auth Security:  Disabled (Open LAN access)\n")
+	}
+	if cfg.Tally.AutoStart {
+		fmt.Printf("  • Auto-Start:     Enabled (Auto-launches Tally if stopped)\n")
 	}
 	if tray.IsFirewallRuleConfigured() {
 		fmt.Printf("  • Win Firewall:   Allowed (Inbound TCP rule active)\n")

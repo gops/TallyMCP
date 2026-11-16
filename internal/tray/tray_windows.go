@@ -108,6 +108,7 @@ const (
 	idToggleAutoStart = 2007
 	idCheckUpdate     = 2008
 	idExit            = 2009
+	idStartTally      = 2010
 )
 
 type wndClassExW struct {
@@ -351,6 +352,9 @@ func wndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 			tallyText, _ := syscall.UTF16PtrFromString(fmt.Sprintf("🏢 Tally URL: %s", cfg.TallyURL))
 			procAppendMenuW.Call(hMenu, MF_STRING|MF_DISABLED|MF_GRAYED, idTallyStatus, uintptr(unsafe.Pointer(tallyText)))
 
+			startTallyText, _ := syscall.UTF16PtrFromString("▶️ Start Tally")
+			procAppendMenuW.Call(hMenu, MF_STRING, idStartTally, uintptr(unsafe.Pointer(startTallyText)))
+
 			procAppendMenuW.Call(hMenu, MF_SEPARATOR, 0, 0)
 
 			var dashMenuTitle string
@@ -406,6 +410,29 @@ func wndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 		trayMu.Unlock()
 
 		switch cmdID {
+		case idStartTally:
+			go func() {
+				if cfg.OnStartTally == nil {
+					return
+				}
+				showTrayBalloon("Tally MCP", "Checking Tally and launching if stopped...")
+				ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+				defer cancel()
+
+				status, _, err := cfg.OnStartTally(ctx)
+				titlePtr, _ := syscall.UTF16PtrFromString("Tally MCP - Start Tally")
+				if err != nil {
+					failPtr, _ := syscall.UTF16PtrFromString(fmt.Sprintf("Failed to start Tally: %v", err))
+					procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(failPtr)), uintptr(unsafe.Pointer(titlePtr)), MB_OK|MB_ICONERROR)
+					return
+				}
+				if status == "already_running" {
+					showTrayBalloon("Tally MCP", "Tally is already running and connected.")
+				} else {
+					showTrayBalloon("Tally MCP", "Tally started and connected successfully!")
+				}
+			}()
+
 		case idOpenDash:
 			openURL(resolveDashboardURL(cfg.ListenURL))
 

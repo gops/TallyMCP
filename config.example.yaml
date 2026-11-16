@@ -12,6 +12,11 @@ server:
   # - "stdio": Standard I/O (for local CLI / desktop agents spawning the exe directly)
   transport: "sse"
 
+  # Default payload serialization format for MCP tool responses:
+  # - "compact_json": Standard JSON stripped of unnecessary whitespace (default)
+  # - "toon": Token-Oriented Object Notation (reduces token consumption by 40% to 60%)
+  payload_format: "compact_json"
+
 tally:
   # HTTP address where Tally ERP 9 or TallyPrime is running.
   # To enable in Tally:
@@ -24,6 +29,13 @@ tally:
 
   # Specific company name (leave empty to query whichever company is currently open in Tally)
   default_company: ""
+
+  # Optional path to tally.exe / TallyPrime executable (e.g. "C:\\Program Files\\TallyPrime\\tally.exe").
+  # Leave empty to automatically detect standard TallyPrime / Tally ERP 9 installation paths.
+  exe_path: ""
+
+  # Automatically start Tally if not running when an MCP request arrives or when server starts
+  auto_start: false
 
 auth:
   # Enable authentication to prevent unauthorized devices on your LAN from accessing Tally

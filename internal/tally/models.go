@@ -148,8 +148,24 @@ type PartyBalance struct {
 	Balance float64 `json:"balance"`
 }
 
+// VoucherFilterOptions defines search and filtering criteria for vouchers.
+type VoucherFilterOptions struct {
+	VoucherType     string   `json:"voucher_type,omitempty"`
+	FromDate        string   `json:"from_date,omitempty"`
+	ToDate          string   `json:"to_date,omitempty"`
+	Party           string   `json:"party,omitempty"`
+	Amount          *float64 `json:"amount,omitempty"`
+	AmountTolerance *float64 `json:"amount_tolerance,omitempty"`
+	MinAmount       *float64 `json:"min_amount,omitempty"`
+	MaxAmount       *float64 `json:"max_amount,omitempty"`
+	Search          string   `json:"search,omitempty"`
+	Limit           int      `json:"limit,omitempty"`
+	Offset          int      `json:"offset,omitempty"`
+}
+
 // VoucherItem represents an accounting/inventory transaction in Tally.
 type VoucherItem struct {
+	MasterID        string              `xml:"MASTERID,omitempty" json:"master_id,omitempty"`
 	VoucherTypeName string              `xml:"VOUCHERTYPENAME" json:"voucher_type"`
 	VoucherNumber   string              `xml:"VOUCHERNUMBER" json:"voucher_number"`
 	Date            string              `xml:"DATE" json:"date"`

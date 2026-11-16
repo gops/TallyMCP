@@ -25,6 +25,8 @@ type ServerConfig struct {
 	ListenAddress string `yaml:"listen_address"`
 	// Transport can be "sse" (default, over HTTP for local network) or "stdio" (stdin/stdout).
 	Transport string `yaml:"transport"`
+	// PayloadFormat sets the default serialization format for tool responses ("compact_json" (default), "json", or "toon").
+	PayloadFormat string `yaml:"payload_format"`
 }
 
 // TallyConfig defines connection details to Tally ERP 9 / TallyPrime.
@@ -41,6 +43,10 @@ type TallyConfig struct {
 	ThrottleMs int `yaml:"throttle_ms"`
 	// CacheTTLSeconds is the TTL for master data in-memory cache in seconds (default: 30).
 	CacheTTLSeconds int `yaml:"cache_ttl_seconds"`
+	// ExePath is the optional file path to tally.exe / TallyPrime executable.
+	ExePath string `yaml:"exe_path"`
+	// AutoStart automatically attempts to start Tally if it is not running when needed.
+	AutoStart bool `yaml:"auto_start"`
 }
 
 // AuthConfig defines API key / Bearer token security for local network access.
@@ -72,6 +78,7 @@ func DefaultConfig() *Config {
 		Server: ServerConfig{
 			ListenAddress: "0.0.0.0:8080",
 			Transport:     "sse",
+			PayloadFormat: "compact_json",
 		},
 		Tally: TallyConfig{
 			URL:             "http://localhost:9000",
@@ -80,6 +87,8 @@ func DefaultConfig() *Config {
 			MaxQueueSize:    100,
 			ThrottleMs:      15,
 			CacheTTLSeconds: 30,
+			ExePath:         "",
+			AutoStart:       false,
 		},
 		Auth: AuthConfig{
 			Enabled: false,
@@ -153,6 +162,9 @@ func applyEnvOverrides(cfg *Config) {
 	if val := os.Getenv("TALLY_MCP_TRANSPORT"); val != "" {
 		cfg.Server.Transport = val
 	}
+	if val := os.Getenv("TALLY_MCP_PAYLOAD_FORMAT"); val != "" {
+		cfg.Server.PayloadFormat = strings.ToLower(strings.TrimSpace(val))
+	}
 	if val := os.Getenv("TALLY_MCP_API_KEY"); val != "" {
 		cfg.Auth.APIKey = val
 		cfg.Auth.Enabled = true
@@ -175,6 +187,13 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Tally.CacheTTLSeconds = n
 		}
 	}
+	if val := os.Getenv("TALLY_EXE_PATH"); val != "" {
+		cfg.Tally.ExePath = val
+	}
+	if val := os.Getenv("TALLY_AUTO_START"); val != "" {
+		valLower := strings.ToLower(strings.TrimSpace(val))
+		cfg.Tally.AutoStart = valLower == "true" || valLower == "1" || valLower == "yes" || valLower == "on"
+	}
 }
 
 // WriteDefaultConfigFile writes a fully commented default config file to path.
@@ -187,6 +206,8 @@ server:
   listen_address: "0.0.0.0:8080"
   # Transport mode: "sse" (HTTP mode exposing /mcp and /sse for LAN) or "stdio" (Standard I/O)
   transport: "sse"
+  # Default serialization format for tool responses: "compact_json" (default) or "toon" (Token-Oriented Object Notation)
+  payload_format: "compact_json"
 
 tally:
   # HTTP address of Tally ERP 9 or TallyPrime
@@ -202,6 +223,11 @@ tally:
   throttle_ms: 15
   # In-memory cache TTL for master data in seconds (instant sub-millisecond repeated queries)
   cache_ttl_seconds: 30
+  # Optional path to tally.exe / TallyPrime executable (e.g. "C:\\Program Files\\TallyPrime\\tally.exe")
+  # If left empty, standard installation directories are automatically searched.
+  exe_path: ""
+  # Automatically start Tally if not running when an MCP request arrives or when server starts
+  auto_start: false
 
 auth:
   # Set to true to require authentication from LAN clients

@@ -6,28 +6,44 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"tally-mcp/internal/tally"
+	"tally-mcp/internal/toon"
 	"tally-mcp/internal/updater"
 )
 
 // ToolHandlers encapsulates dependencies for handling MCP tool calls.
 type ToolHandlers struct {
-	tallyClient *tally.Client
-	appVersion  string
-	githubRepo  string
-	baseURL     string
+	tallyClient   *tally.Client
+	appVersion    string
+	githubRepo    string
+	baseURL       string
+	defaultFormat string
 }
 
 // NewToolHandlers creates a new ToolHandlers instance.
-func NewToolHandlers(tallyClient *tally.Client, appVersion, githubRepo string) *ToolHandlers {
+func NewToolHandlers(tallyClient *tally.Client, appVersion, githubRepo, defaultFormat string) *ToolHandlers {
 	return &ToolHandlers{
-		tallyClient: tallyClient,
-		appVersion:  appVersion,
-		githubRepo:  githubRepo,
+		tallyClient:   tallyClient,
+		appVersion:    appVersion,
+		githubRepo:    githubRepo,
+		defaultFormat: defaultFormat,
 	}
+}
+
+// formatOutput serializes data into the requested format ("toon" or "compact_json").
+func (h *ToolHandlers) formatOutput(v any, reqFormat string) (string, error) {
+	fmtChoice := strings.ToLower(strings.TrimSpace(reqFormat))
+	if fmtChoice == "" {
+		fmtChoice = strings.ToLower(strings.TrimSpace(h.defaultFormat))
+	}
+	if fmtChoice == "toon" {
+		return toon.Marshal(v)
+	}
+	return tally.CompactJSON(v)
 }
 
 // SetBaseURL configures the base URL for generating absolute download links.
@@ -37,26 +53,68 @@ func (h *ToolHandlers) SetBaseURL(baseURL string) {
 
 // HandleTallyStatus checks connectivity to Tally ERP.
 func (h *ToolHandlers) HandleTallyStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	startIfStopped := req.GetBool("start_if_stopped", false)
+	waitSeconds := req.GetInt("wait_seconds", 30)
+
 	status, err := h.tallyClient.Ping(ctx)
-	if err != nil {
-		qLen, qCap := h.tallyClient.QueueStats()
-		resp := map[string]any{
-			"connected":      false,
-			"tally_url":      h.tallyClient.BaseURL(),
-			"queue_length":   qLen,
-			"queue_capacity": qCap,
-			"error":          err.Error(),
-			"hint":           "Verify Tally ERP 9 / TallyPrime is running and server port 9000 is enabled in F12 / Advanced Configuration.",
+	if err != nil && startIfStopped {
+		waitDuration := time.Duration(waitSeconds) * time.Second
+		if waitDuration <= 0 {
+			waitDuration = 30 * time.Second
 		}
-		jsonStr, _ := tally.PrettyJSON(resp)
-		return mcp.NewToolResultText(jsonStr), nil
+		startRes, startErr := h.tallyClient.EnsureRunning(ctx, waitDuration)
+		if startErr == nil && startRes != nil && startRes.Connected {
+			status, err = h.tallyClient.Ping(ctx)
+		}
 	}
 
-	jsonStr, err := tally.PrettyJSON(status)
 	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		qLen, qCap := h.tallyClient.QueueStats()
+		detectedExe, _ := h.tallyClient.FindExecutable("")
+		resp := map[string]any{
+			"connected":         false,
+			"tally_url":         h.tallyClient.BaseURL(),
+			"queue_length":      qLen,
+			"queue_capacity":    qCap,
+			"error":             err.Error(),
+			"detected_exe_path": detectedExe,
+			"can_start":         detectedExe != "",
+			"hint":              "Tally ERP 9 / TallyPrime is not running. Use the 'tally_start' MCP tool to launch it, or set auto_start: true in config.yaml.",
+		}
+		outStr, formatErr := h.formatOutput(resp, req.GetString("format", ""))
+		if formatErr != nil {
+			return mcp.NewToolResultError(formatErr.Error()), nil
+		}
+		return mcp.NewToolResultText(outStr), nil
 	}
-	return mcp.NewToolResultText(jsonStr), nil
+
+	outStr, formatErr := h.formatOutput(status, req.GetString("format", ""))
+	if formatErr != nil {
+		return mcp.NewToolResultError(formatErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
+
+// HandleStartTally starts Tally ERP / TallyPrime if not currently running.
+func (h *ToolHandlers) HandleStartTally(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	customExe := req.GetString("exe_path", "")
+	waitSeconds := req.GetInt("wait_seconds", 30)
+	if waitSeconds <= 0 {
+		waitSeconds = 30
+	}
+
+	waitDuration := time.Duration(waitSeconds) * time.Second
+	res, err := h.tallyClient.StartTally(ctx, customExe, waitDuration)
+	if err != nil && res == nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to start Tally: %v", err)), nil
+	}
+
+	outStr, formatErr := h.formatOutput(res, req.GetString("format", ""))
+	if formatErr != nil {
+		return mcp.NewToolResultError(formatErr.Error()), nil
+	}
+
+	return mcp.NewToolResultText(outStr), nil
 }
 
 // HandleListCompanies lists loaded companies in Tally.
@@ -66,11 +124,11 @@ func (h *ToolHandlers) HandleListCompanies(ctx context.Context, req mcp.CallTool
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to list companies: %v", err)), nil
 	}
 
-	jsonStr, err := tally.CompactJSON(companies)
+	outStr, err := h.formatOutput(companies, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(jsonStr), nil
+	return mcp.NewToolResultText(outStr), nil
 }
 
 // HandleListLedgers lists accounts/ledgers with optional group filter, search query, pagination, and compact mode.
@@ -89,11 +147,11 @@ func (h *ToolHandlers) HandleListLedgers(ctx context.Context, req mcp.CallToolRe
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to fetch ledgers: %v", err)), nil
 	}
 
-	jsonStr, err := tally.CompactJSON(paginated)
+	outStr, err := h.formatOutput(paginated, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(jsonStr), nil
+	return mcp.NewToolResultText(outStr), nil
 }
 
 // HandleGetLedger fetches details of a specific ledger.
@@ -108,11 +166,11 @@ func (h *ToolHandlers) HandleGetLedger(ctx context.Context, req mcp.CallToolRequ
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ledger %q: %v", name, err)), nil
 	}
 
-	jsonStr, err := tally.CompactJSON(details)
+	outStr, err := h.formatOutput(details, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(jsonStr), nil
+	return mcp.NewToolResultText(outStr), nil
 }
 
 // HandleListStockItems lists stock items from Tally inventory with optional group filter, search query, pagination, and compact mode.
@@ -131,31 +189,62 @@ func (h *ToolHandlers) HandleListStockItems(ctx context.Context, req mcp.CallToo
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to list stock items: %v", err)), nil
 	}
 
-	jsonStr, err := tally.CompactJSON(paginated)
+	outStr, err := h.formatOutput(paginated, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(jsonStr), nil
+	return mcp.NewToolResultText(outStr), nil
 }
 
-// HandleListVouchers queries accounting and inventory vouchers with pagination.
+// HandleListVouchers queries accounting and inventory vouchers with TDL pushdown filters, search, and pagination.
 func (h *ToolHandlers) HandleListVouchers(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	voucherType := req.GetString("voucher_type", "")
-	fromDate := req.GetString("from_date", "")
-	toDate := req.GetString("to_date", "")
-	limit := req.GetInt("limit", 50)
-	offset := req.GetInt("offset", 0)
+	opts := tally.VoucherFilterOptions{
+		VoucherType: req.GetString("voucher_type", ""),
+		FromDate:    req.GetString("from_date", ""),
+		ToDate:      req.GetString("to_date", ""),
+		Party:       req.GetString("party", ""),
+		Search:      req.GetString("search", ""),
+		Limit:       req.GetInt("limit", 50),
+		Offset:      req.GetInt("offset", 0),
+	}
 
-	paginated, err := h.tallyClient.ListVouchersPaginated(ctx, voucherType, fromDate, toDate, limit, offset)
+	if opts.Party == "" {
+		opts.Party = req.GetString("party_name", "")
+	}
+	if opts.Party == "" {
+		opts.Party = req.GetString("customer", "")
+	}
+
+	args := req.GetArguments()
+	if args != nil {
+		if _, ok := args["amount"]; ok {
+			amt := req.GetFloat("amount", 0.0)
+			opts.Amount = &amt
+		}
+		if _, ok := args["amount_tolerance"]; ok {
+			tol := req.GetFloat("amount_tolerance", 1.0)
+			opts.AmountTolerance = &tol
+		}
+		if _, ok := args["min_amount"]; ok {
+			minAmt := req.GetFloat("min_amount", 0.0)
+			opts.MinAmount = &minAmt
+		}
+		if _, ok := args["max_amount"]; ok {
+			maxAmt := req.GetFloat("max_amount", 0.0)
+			opts.MaxAmount = &maxAmt
+		}
+	}
+
+	paginated, err := h.tallyClient.FilterVouchersPaginated(ctx, opts)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to list vouchers: %v", err)), nil
 	}
 
-	jsonStr, err := tally.CompactJSON(paginated)
+	outStr, err := h.formatOutput(paginated, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(jsonStr), nil
+	return mcp.NewToolResultText(outStr), nil
 }
 
 // HandleGetVoucher queries full voucher details with ledger splits, inventory, and tax breakdown.
@@ -190,11 +279,11 @@ func (h *ToolHandlers) HandleGetVoucher(ctx context.Context, req mcp.CallToolReq
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get voucher: %v", err)), nil
 	}
 
-	jsonStr, err := tally.CompactJSON(detail)
+	outStr, err := h.formatOutput(detail, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(jsonStr), nil
+	return mcp.NewToolResultText(outStr), nil
 }
 
 // HandleGetTrialBalance returns the Trial Balance.
@@ -207,11 +296,11 @@ func (h *ToolHandlers) HandleGetTrialBalance(ctx context.Context, req mcp.CallTo
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get trial balance: %v", err)), nil
 	}
 
-	jsonStr, err := tally.CompactJSON(tb)
+	outStr, err := h.formatOutput(tb, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(jsonStr), nil
+	return mcp.NewToolResultText(outStr), nil
 }
 
 // HandleGetProfitAndLoss returns the Profit & Loss statement.
@@ -224,11 +313,11 @@ func (h *ToolHandlers) HandleGetProfitAndLoss(ctx context.Context, req mcp.CallT
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get profit and loss: %v", err)), nil
 	}
 
-	jsonStr, err := tally.CompactJSON(pl)
+	outStr, err := h.formatOutput(pl, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(jsonStr), nil
+	return mcp.NewToolResultText(outStr), nil
 }
 
 // HandleGetBalanceSheet returns the Balance Sheet report.
@@ -247,11 +336,11 @@ func (h *ToolHandlers) HandleGetBalanceSheet(ctx context.Context, req mcp.CallTo
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get balance sheet: %v", err)), nil
 	}
 
-	jsonStr, err := tally.CompactJSON(bs)
+	outStr, err := h.formatOutput(bs, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(jsonStr), nil
+	return mcp.NewToolResultText(outStr), nil
 }
 
 // HandleGetFinancialSummary returns an executive snapshot of key financial metrics (Cash/Bank, Receivables, Payables, Top Debtors/Creditors, Working Capital) in < 350 tokens.
@@ -270,11 +359,11 @@ func (h *ToolHandlers) HandleGetFinancialSummary(ctx context.Context, req mcp.Ca
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to generate financial summary: %v", err)), nil
 	}
 
-	jsonStr, err := tally.CompactJSON(summary)
+	outStr, err := h.formatOutput(summary, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(jsonStr), nil
+	return mcp.NewToolResultText(outStr), nil
 }
 
 // HandleGetOutstandingReceivables returns the Bills Receivable aging report.
@@ -294,11 +383,11 @@ func (h *ToolHandlers) HandleGetOutstandingReceivables(ctx context.Context, req 
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get outstanding receivables: %v", err)), nil
 	}
 
-	jsonStr, err := tally.CompactJSON(recv)
+	outStr, err := h.formatOutput(recv, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(jsonStr), nil
+	return mcp.NewToolResultText(outStr), nil
 }
 
 // HandleGetOutstandingPayables returns the Bills Payable aging report.
@@ -318,11 +407,11 @@ func (h *ToolHandlers) HandleGetOutstandingPayables(ctx context.Context, req mcp
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get outstanding payables: %v", err)), nil
 	}
 
-	jsonStr, err := tally.CompactJSON(pay)
+	outStr, err := h.formatOutput(pay, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(jsonStr), nil
+	return mcp.NewToolResultText(outStr), nil
 }
 
 // HandleGetDayBook returns all vouchers entered on a specific date.
@@ -337,11 +426,11 @@ func (h *ToolHandlers) HandleGetDayBook(ctx context.Context, req mcp.CallToolReq
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get day book: %v", err)), nil
 	}
 
-	jsonStr, err := tally.CompactJSON(db)
+	outStr, err := h.formatOutput(db, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(jsonStr), nil
+	return mcp.NewToolResultText(outStr), nil
 }
 
 // HandleGeneratePDF generates a PDF for a specified report or voucher, stores it in temp directory, and sends it to the requesting agent.

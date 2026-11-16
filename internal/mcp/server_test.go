@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +16,12 @@ import (
 	mcppkg "tally-mcp/internal/mcp"
 	"tally-mcp/internal/tally"
 )
+
+type mockRoundTripper func(req *http.Request) *http.Response
+
+func (m mockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return m(req), nil
+}
 
 func TestStreamableHTTPEndpoint(t *testing.T) {
 	// Find a free port
@@ -28,6 +36,20 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 	cfg.Auth.Enabled = false
 
 	tallyClient := tally.NewClient(cfg.Tally)
+	mockXML := `<ENVELOPE><BODY><DATA><COLLECTION>
+		<COMPANY><NAME>Demo Company</NAME></COMPANY>
+		<COMPANY><NAME>ACME Corp</NAME></COMPANY>
+		<VOUCHER VOUCHERNUMBER="101" DATE="20261031" VOUCHERTYPENAME="Sales" PARTYLEDGERNAME="Tata Steel" AMOUNT="-50000.00"></VOUCHER>
+		<LEDGER NAME="Cash"><PARENT>Cash-in-Hand</PARENT><CLOSINGBALANCE>15000.00</CLOSINGBALANCE></LEDGER>
+		<STOCKITEM NAME="Pipes"><PARENT>Hardware</PARENT><CLOSINGBALANCE>100 Nos</CLOSINGBALANCE><CLOSINGVALUE>5000.00</CLOSINGVALUE></STOCKITEM>
+	</COLLECTION></DATA></BODY></ENVELOPE>`
+	tallyClient.SetTransport(mockRoundTripper(func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(mockXML)),
+			Header:     make(http.Header),
+		}
+	}))
 	srv := mcppkg.NewServer(cfg, tallyClient, "v1.0.8")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -205,6 +227,7 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 
 		for _, expected := range []string{
 			"tally_status",
+			"tally_start",
 			"tally_list_companies",
 			"tally_list_ledgers",
 			"tally_list_vouchers",
@@ -503,6 +526,230 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 		}
 	})
 
+	// 11. Test Streamable HTTP tools/call with format: "toon"
+	t.Run("POST /mcp tools/call with format toon", func(t *testing.T) {
+		callPayload := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      303,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name": "tally_list_vouchers",
+				"arguments": map[string]any{
+					"limit":  10,
+					"format": "toon",
+				},
+			},
+		}
+		data, _ := json.Marshal(callPayload)
+
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp tally_list_vouchers with format:toon failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 OK, got %d", resp.StatusCode)
+		}
+
+		var rpcResp map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+			t.Fatalf("failed to decode JSON-RPC response: %v", err)
+		}
+
+		result, ok := rpcResp["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected result object in response: %v", rpcResp)
+		}
+		content, ok := result["content"].([]any)
+		if !ok || len(content) == 0 {
+			t.Fatalf("expected non-empty content in result: %v", result)
+		}
+		firstItem := content[0].(map[string]any)
+		textVal, ok := firstItem["text"].(string)
+		if !ok {
+			t.Fatalf("expected text content: %v", firstItem)
+		}
+
+		// In TOON format, vouchers array should be formatted as "vouchers[N]..." or include count/total keys
+		if !strings.Contains(textVal, "count:") && !strings.Contains(textVal, "vouchers[") {
+			t.Errorf("expected TOON formatted text with count: or vouchers[, got:\n%s", textVal)
+		}
+	})
+
+	// 12. Test Streamable HTTP tools/call tally_list_vouchers with party & amount filters
+	t.Run("POST /mcp tools/call tally_list_vouchers with party and amount filters", func(t *testing.T) {
+		callPayload := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      304,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name": "tally_list_vouchers",
+				"arguments": map[string]any{
+					"party":  "Tata Steel",
+					"amount": 50000,
+				},
+			},
+		}
+		data, _ := json.Marshal(callPayload)
+
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp tally_list_vouchers filtered failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 OK, got %d", resp.StatusCode)
+		}
+
+		var rpcResp map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+			t.Fatalf("failed to decode JSON-RPC response: %v", err)
+		}
+
+		result, ok := rpcResp["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected result object: %v", rpcResp)
+		}
+		content, ok := result["content"].([]any)
+		if !ok || len(content) == 0 {
+			t.Fatalf("expected non-empty content: %v", result)
+		}
+		firstItem := content[0].(map[string]any)
+		textVal := firstItem["text"].(string)
+
+		if !strings.Contains(textVal, "Tata Steel") {
+			t.Errorf("expected Tata Steel voucher in response, got:\n%s", textVal)
+		}
+	})
+
+	// 13. Test Streamable HTTP tools/call tally_start
+	t.Run("POST /mcp tools/call tally_start", func(t *testing.T) {
+		reqPayload := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      13,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name": "tally_start",
+				"arguments": map[string]any{
+					"wait_seconds": 5,
+				},
+			},
+		}
+
+		payloadBytes, _ := json.Marshal(reqPayload)
+		req, _ := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewBuffer(payloadBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp tally_start failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 OK, got %d", resp.StatusCode)
+		}
+
+		var rpcResp map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+			t.Fatalf("failed to decode JSON-RPC response: %v", err)
+		}
+
+		result, ok := rpcResp["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected result object: %v", rpcResp)
+		}
+		content, ok := result["content"].([]any)
+		if !ok || len(content) == 0 {
+			t.Fatalf("expected non-empty content: %v", result)
+		}
+		firstItem := content[0].(map[string]any)
+		textVal := firstItem["text"].(string)
+
+		if !strings.Contains(textVal, "already_running") && !strings.Contains(textVal, "started") {
+			t.Errorf("expected already_running or started in tally_start response, got:\n%s", textVal)
+		}
+	})
+
+	// 14. Test Streamable HTTP tools/call tally_status
+	t.Run("POST /mcp tools/call tally_status", func(t *testing.T) {
+		reqPayload := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      14,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name": "tally_status",
+				"arguments": map[string]any{
+					"start_if_stopped": true,
+				},
+			},
+		}
+
+		payloadBytes, _ := json.Marshal(reqPayload)
+		req, _ := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewBuffer(payloadBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp tally_status failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 OK, got %d", resp.StatusCode)
+		}
+
+		var rpcResp map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+			t.Fatalf("failed to decode JSON-RPC response: %v", err)
+		}
+
+		result, ok := rpcResp["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected result object: %v", rpcResp)
+		}
+		content, ok := result["content"].([]any)
+		if !ok || len(content) == 0 {
+			t.Fatalf("expected non-empty content: %v", result)
+		}
+		firstItem := content[0].(map[string]any)
+		textVal := firstItem["text"].(string)
+
+		if !strings.Contains(textVal, "connected") {
+			t.Errorf("expected connected in tally_status response, got:\n%s", textVal)
+		}
+	})
+
 	// Clean shutdown
 	cancel()
 	select {
@@ -573,5 +820,95 @@ func TestStreamableHTTPWithAuth(t *testing.T) {
 	resp3.Body.Close()
 	if resp3.StatusCode != http.StatusOK {
 		t.Errorf("expected 200 OK with valid query token, got %d", resp3.StatusCode)
+	}
+}
+
+func TestServerDefaultPayloadFormatToon(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to bind test listener: %v", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+
+	cfg := config.DefaultConfig()
+	cfg.Server.ListenAddress = fmt.Sprintf("127.0.0.1:%d", port)
+	cfg.Server.PayloadFormat = "toon"
+
+	tallyClient := tally.NewClient(cfg.Tally)
+	mockXML := `<ENVELOPE><BODY><DATA><COLLECTION>
+		<COMPANY><NAME>Demo Company</NAME></COMPANY>
+		<COMPANY><NAME>ACME Corp</NAME></COMPANY>
+	</COLLECTION></DATA></BODY></ENVELOPE>`
+	tallyClient.SetTransport(mockRoundTripper(func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(mockXML)),
+			Header:     make(http.Header),
+		}
+	}))
+	srv := mcppkg.NewServer(cfg, tallyClient, "v1.0.8")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = srv.RunSSEWithListener(ctx, l)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	// Initialize session
+	initPayload := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+	initReq, _ := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewBufferString(initPayload))
+	initReq.Header.Set("Content-Type", "application/json")
+	initReq.Header.Set("Accept", "application/json, text/event-stream")
+	initResp, err := http.DefaultClient.Do(initReq)
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	sessionID := initResp.Header.Get("Mcp-Session-Id")
+	initResp.Body.Close()
+
+	callPayload := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      401,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "tally_list_companies",
+			"arguments": map[string]any{},
+		},
+	}
+	data, _ := json.Marshal(callPayload)
+
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", sessionID)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /mcp failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var rpcResp map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	result := rpcResp["result"].(map[string]any)
+	content := result["content"].([]any)
+	first := content[0].(map[string]any)
+	textVal := first["text"].(string)
+
+	// Since server default payload_format is "toon", output should be in TOON tabular format "[2]{name}:"
+	if !strings.Contains(textVal, "[2]{name}:") && !strings.Contains(textVal, "Demo Company") {
+		t.Errorf("expected default TOON output when payload_format is 'toon', got:\n%s", textVal)
 	}
 }

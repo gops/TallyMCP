@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"tally-mcp/internal/config"
@@ -27,6 +28,9 @@ type Client struct {
 	queueSem         chan struct{} // Capacity MaxQueueSize: buffers incoming queries before dropping/rejecting
 	throttleDuration time.Duration // Cooldown sleep between consecutive queries
 	cache            *MemoryCache  // In-memory TTL cache for instant lookup of static/master data
+	exePath          string        // Path to Tally executable
+	autoStart        bool          // Automatically start Tally if not running
+	launchMu         sync.Mutex    // Protects process start concurrency
 }
 
 // NewClient creates a new Tally XML Client.
@@ -66,6 +70,8 @@ func NewClient(cfg config.TallyConfig) *Client {
 		queueSem:         make(chan struct{}, maxQueueSize),
 		throttleDuration: time.Duration(throttleMs) * time.Millisecond,
 		cache:            NewMemoryCache(cacheTTL),
+		exePath:          cfg.ExePath,
+		autoStart:        cfg.AutoStart,
 	}
 }
 
@@ -114,6 +120,14 @@ func (c *Client) ExecuteRawXML(ctx context.Context, xmlContent string) ([]byte, 
 		return nil, err
 	}
 
+	// Pre-flight Guard: Validate and sanitize XML before dispatching to Tally.
+	// Catches malformed XML, unbalanced quotes, unescaped delimiters, and invalid TDL formulas
+	// before they reach Tally's C++ core, preventing fatal "Can not understand, bad formula" crashes.
+	safeXML, err := ValidateAndSanitizeTallyXML(xmlContent)
+	if err != nil {
+		return nil, fmt.Errorf("pre-flight XML guard: %w", err)
+	}
+
 	// Step 1: Request a slot in the incoming query buffer
 	select {
 	case c.queueSem <- struct{}{}:
@@ -138,7 +152,14 @@ func (c *Client) ExecuteRawXML(ctx context.Context, xmlContent string) ([]byte, 
 	}
 
 	// Step 3: Execute the HTTP request against Tally
-	return c.doHTTP(ctx, xmlContent)
+	body, err := c.doHTTP(ctx, safeXML)
+	if err != nil && c.autoStart && isConnectionRefused(err) {
+		startRes, startErr := c.EnsureRunning(ctx, 30*time.Second)
+		if startErr == nil && startRes != nil && startRes.Connected {
+			body, err = c.doHTTP(ctx, safeXML)
+		}
+	}
+	return body, err
 }
 
 func (c *Client) doHTTP(ctx context.Context, xmlContent string) ([]byte, error) {
@@ -178,6 +199,12 @@ func (c *Client) Ping(ctx context.Context) (*ServerStatus, error) {
 	}
 
 	companies, err := c.ListCompanies(ctx)
+	if err != nil && c.autoStart && isConnectionRefused(err) {
+		startRes, startErr := c.EnsureRunning(ctx, 30*time.Second)
+		if startErr == nil && startRes != nil && startRes.Connected {
+			companies, err = c.ListCompanies(ctx)
+		}
+	}
 	if err != nil {
 		status.Error = err.Error()
 		return status, err
@@ -538,9 +565,72 @@ func (c *Client) FilterStockItems(ctx context.Context, group, search string, lim
 	}, nil
 }
 
-// ListVouchers fetches vouchers with optional type, fromDate, and toDate (YYYYMMDD format).
-func (c *Client) ListVouchers(ctx context.Context, voucherType, fromDate, toDate string) ([]VoucherItem, error) {
-	xmlQuery, err := BuildListVouchersXML(c.defaultCompany, voucherType, fromDate, toDate)
+type rawVoucherXML struct {
+	MasterID            string  `xml:"MASTERID"`
+	MasterIDAttr        string  `xml:"MASTERID,attr"`
+	VoucherTypeName     string  `xml:"VOUCHERTYPENAME"`
+	VoucherTypeNameAttr string  `xml:"VOUCHERTYPENAME,attr"`
+	VoucherNumber       string  `xml:"VOUCHERNUMBER"`
+	VoucherNumberAttr   string  `xml:"VOUCHERNUMBER,attr"`
+	Date                string  `xml:"DATE"`
+	DateAttr            string  `xml:"DATE,attr"`
+	EffectiveDate       string  `xml:"EFFECTIVEDATE"`
+	EffectiveDateAttr   string  `xml:"EFFECTIVEDATE,attr"`
+	Reference           string  `xml:"REFERENCE"`
+	ReferenceAttr       string  `xml:"REFERENCE,attr"`
+	PartyLedgerName     string  `xml:"PARTYLEDGERNAME"`
+	PartyLedgerNameAttr string  `xml:"PARTYLEDGERNAME,attr"`
+	Amount              float64 `xml:"AMOUNT"`
+	AmountAttr          float64 `xml:"AMOUNT,attr"`
+	Narration           string  `xml:"NARRATION"`
+	NarrationAttr       string  `xml:"NARRATION,attr"`
+}
+
+func (r rawVoucherXML) toVoucherItem() VoucherItem {
+	item := VoucherItem{
+		MasterID:        r.MasterID,
+		VoucherTypeName: r.VoucherTypeName,
+		VoucherNumber:   r.VoucherNumber,
+		Date:            r.Date,
+		EffectiveDate:   r.EffectiveDate,
+		Reference:       r.Reference,
+		PartyLedgerName: r.PartyLedgerName,
+		Amount:          r.Amount,
+		Narration:       r.Narration,
+	}
+	if item.MasterID == "" {
+		item.MasterID = r.MasterIDAttr
+	}
+	if item.VoucherTypeName == "" {
+		item.VoucherTypeName = r.VoucherTypeNameAttr
+	}
+	if item.VoucherNumber == "" {
+		item.VoucherNumber = r.VoucherNumberAttr
+	}
+	if item.Date == "" {
+		item.Date = r.DateAttr
+	}
+	if item.EffectiveDate == "" {
+		item.EffectiveDate = r.EffectiveDateAttr
+	}
+	if item.Reference == "" {
+		item.Reference = r.ReferenceAttr
+	}
+	if item.PartyLedgerName == "" {
+		item.PartyLedgerName = r.PartyLedgerNameAttr
+	}
+	if item.Amount == 0 && r.AmountAttr != 0 {
+		item.Amount = r.AmountAttr
+	}
+	if item.Narration == "" {
+		item.Narration = r.NarrationAttr
+	}
+	return item
+}
+
+// FilterVouchers queries vouchers from Tally using TDL server-side pushdown filters and in-memory precision filtering.
+func (c *Client) FilterVouchers(ctx context.Context, opts VoucherFilterOptions) ([]VoucherItem, error) {
+	xmlQuery, err := BuildFilteredListVouchersXML(c.defaultCompany, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -555,11 +645,11 @@ func (c *Client) ListVouchers(ctx context.Context, voucherType, fromDate, toDate
 		Body    struct {
 			Data struct {
 				TallyMessages []struct {
-					Voucher *VoucherItem `xml:"VOUCHER"`
+					Voucher *rawVoucherXML `xml:"VOUCHER"`
 				} `xml:"TALLYMESSAGE"`
-				Vouchers []VoucherItem `xml:"VOUCHER"`
+				Vouchers []rawVoucherXML `xml:"VOUCHER"`
 				Collection struct {
-					Vouchers []VoucherItem `xml:"VOUCHER"`
+					Vouchers []rawVoucherXML `xml:"VOUCHER"`
 				} `xml:"COLLECTION"`
 			} `xml:"DATA"`
 		} `xml:"BODY"`
@@ -571,34 +661,43 @@ func (c *Client) ListVouchers(ctx context.Context, voucherType, fromDate, toDate
 
 	var result []VoucherItem
 	for _, msg := range env.Body.Data.TallyMessages {
-		if msg.Voucher != nil && msg.Voucher.VoucherTypeName != "" {
-			result = append(result, *msg.Voucher)
+		if msg.Voucher != nil {
+			v := msg.Voucher.toVoucherItem()
+			if v.VoucherTypeName != "" || v.VoucherNumber != "" {
+				result = append(result, v)
+			}
 		}
 	}
 	if len(result) == 0 && len(env.Body.Data.Vouchers) > 0 {
-		result = env.Body.Data.Vouchers
+		for _, rawV := range env.Body.Data.Vouchers {
+			result = append(result, rawV.toVoucherItem())
+		}
 	}
 	if len(result) == 0 && len(env.Body.Data.Collection.Vouchers) > 0 {
-		result = env.Body.Data.Collection.Vouchers
+		for _, rawV := range env.Body.Data.Collection.Vouchers {
+			result = append(result, rawV.toVoucherItem())
+		}
 	}
 
-	return result, nil
+	return filterVoucherItems(result, opts), nil
 }
 
-// ListVouchersPaginated fetches vouchers and returns a paginated slice with total counts and has_more indicator.
-func (c *Client) ListVouchersPaginated(ctx context.Context, voucherType, fromDate, toDate string, limit, offset int) (*PaginatedVouchers, error) {
-	vouchers, err := c.ListVouchers(ctx, voucherType, fromDate, toDate)
+// FilterVouchersPaginated queries vouchers with server-side pushdown and returns a paginated slice.
+func (c *Client) FilterVouchersPaginated(ctx context.Context, opts VoucherFilterOptions) (*PaginatedVouchers, error) {
+	vouchers, err := c.FilterVouchers(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 
 	total := len(vouchers)
+	limit := opts.Limit
 	if limit <= 0 {
 		limit = 50
 	}
 	if limit > 250 {
 		limit = 250
 	}
+	offset := opts.Offset
 	if offset < 0 {
 		offset = 0
 	}
@@ -631,6 +730,78 @@ func (c *Client) ListVouchersPaginated(ctx context.Context, voucherType, fromDat
 		NextOffset: nextOffset,
 		Vouchers:   paged,
 	}, nil
+}
+
+func filterVoucherItems(items []VoucherItem, opts VoucherFilterOptions) []VoucherItem {
+	var filtered []VoucherItem
+	partyLower := strings.ToLower(strings.TrimSpace(opts.Party))
+	searchLower := strings.ToLower(strings.TrimSpace(opts.Search))
+
+	for _, item := range items {
+		// Party check
+		if partyLower != "" {
+			itemParty := strings.ToLower(item.PartyLedgerName)
+			if !strings.Contains(itemParty, partyLower) {
+				continue
+			}
+		}
+
+		// Amount check
+		if opts.Amount != nil {
+			target := math.Abs(*opts.Amount)
+			tol := 1.0
+			if opts.AmountTolerance != nil && *opts.AmountTolerance >= 0 {
+				tol = *opts.AmountTolerance
+			}
+			itemAmt := math.Abs(item.Amount)
+			if itemAmt < target-tol || itemAmt > target+tol {
+				continue
+			}
+		} else {
+			if opts.MinAmount != nil && math.Abs(item.Amount) < *opts.MinAmount {
+				continue
+			}
+			if opts.MaxAmount != nil && math.Abs(item.Amount) > *opts.MaxAmount {
+				continue
+			}
+		}
+
+		// Search check
+		if searchLower != "" {
+			match := strings.Contains(strings.ToLower(item.PartyLedgerName), searchLower) ||
+				strings.Contains(strings.ToLower(item.VoucherNumber), searchLower) ||
+				strings.Contains(strings.ToLower(item.Reference), searchLower) ||
+				strings.Contains(strings.ToLower(item.Narration), searchLower) ||
+				strings.Contains(strings.ToLower(item.VoucherTypeName), searchLower)
+			if !match {
+				continue
+			}
+		}
+
+		filtered = append(filtered, item)
+	}
+
+	return filtered
+}
+
+// ListVouchers fetches vouchers with optional type, fromDate, and toDate (YYYYMMDD format).
+func (c *Client) ListVouchers(ctx context.Context, voucherType, fromDate, toDate string) ([]VoucherItem, error) {
+	return c.FilterVouchers(ctx, VoucherFilterOptions{
+		VoucherType: voucherType,
+		FromDate:    fromDate,
+		ToDate:      toDate,
+	})
+}
+
+// ListVouchersPaginated fetches vouchers and returns a paginated slice with total counts and has_more indicator.
+func (c *Client) ListVouchersPaginated(ctx context.Context, voucherType, fromDate, toDate string, limit, offset int) (*PaginatedVouchers, error) {
+	return c.FilterVouchersPaginated(ctx, VoucherFilterOptions{
+		VoucherType: voucherType,
+		FromDate:    fromDate,
+		ToDate:      toDate,
+		Limit:       limit,
+		Offset:      offset,
+	})
 }
 
 // GetVoucher retrieves full voucher details with debit/credit ledger splits, inventory entries, and tax breakdown.

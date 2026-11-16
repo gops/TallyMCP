@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 )
 
@@ -154,3 +155,141 @@ func CompactJSON(v any) (string, error) {
 	}
 	return string(b), nil
 }
+
+var (
+	ctrlCharRegex    = regexp.MustCompile(`[\x00-\x08\x0b\x0c\x0e-\x1f]`)
+	formulaTagRegex  = regexp.MustCompile(`(?is)<SYSTEM\s+TYPE=["']Formulae["'][^>]*>(.*?)</SYSTEM>`)
+	formulaNameRegex = regexp.MustCompile(`(?is)<SYSTEM\s+TYPE=["']Formulae["'][^>]*NAME=["']([^"']+)["'][^>]*>`)
+	filterTagRegex   = regexp.MustCompile(`(?is)<FILTER>([^<]+)</FILTER>`)
+)
+
+// XMLEscapeText escapes XML characters for text content inside tags (& -> &amp;, < -> &lt;, > -> &gt;).
+// Does not escape quotes as quotes are valid inside XML text content and needed for TDL string literals.
+func XMLEscapeText(s string) string {
+	s = ctrlCharRegex.ReplaceAllString(s, "")
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
+}
+
+// XMLEscapeAttr escapes XML characters for attribute values (& -> &amp;, < -> &lt;, > -> &gt;, " -> &quot;, ' -> &apos;).
+func XMLEscapeAttr(s string) string {
+	s = XMLEscapeText(s)
+	s = strings.ReplaceAll(s, "\"", "&quot;")
+	s = strings.ReplaceAll(s, "'", "&apos;")
+	return s
+}
+
+// SanitizeTDLString cleans a string for safe inclusion in TDL formula string literals.
+// Strips quotes, semicolons (TDL comments), control chars, and newlines.
+func SanitizeTDLString(s string) string {
+	s = ctrlCharRegex.ReplaceAllString(s, "")
+	s = strings.ReplaceAll(s, "\"", "")
+	s = strings.ReplaceAll(s, ";", "")
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "\n", "")
+	return strings.TrimSpace(s)
+}
+
+// isStandardTDLFilter checks if a filter name is a known built-in Tally system filter.
+func isStandardTDLFilter(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "isnonaccountingvoucher", "isaccountingvoucher", "isinventoryvoucher",
+		"isorderfilter", "iscancelledvoucher", "isoptionalvoucher", "isdeleted":
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidateAndSanitizeTallyXML performs pre-flight static analysis on outgoing XML envelopes
+// to guarantee that no malformed XML or broken TDL formulas reach Tally.
+// Tally's C++ core terminates or halts with "Can not understand, bad formula" when an invalid
+// formula or malformed XML expression is received. This function intercepts and prevents crashes.
+func ValidateAndSanitizeTallyXML(xmlContent string) (string, error) {
+	trimmed := CleanXMLString(xmlContent)
+	if trimmed == "" {
+		return "", fmt.Errorf("XML query cannot be empty")
+	}
+
+	// Strip illegal control characters that cause Tally XML parser failures
+	cleaned := ctrlCharRegex.ReplaceAllString(trimmed, "")
+
+	// 1. Basic Envelope structure check
+	if !strings.Contains(cleaned, "<ENVELOPE>") && !strings.Contains(cleaned, "<ENVELOPE ") {
+		return "", fmt.Errorf("XML query missing <ENVELOPE> root tag")
+	}
+	if !strings.Contains(cleaned, "</ENVELOPE>") {
+		return "", fmt.Errorf("XML query missing </ENVELOPE> closing tag")
+	}
+
+	// 2. Well-formed XML validation
+	// Decoding all tokens ensures there are no unclosed tags, unescaped raw '<', or unescaped '&' entities
+	dec := xml.NewDecoder(strings.NewReader(cleaned))
+	for {
+		_, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("malformed XML syntax (%w); sending malformed XML crashes Tally with 'Bad formula'", err)
+		}
+	}
+
+	// 3. Static Analysis on TDL Formulas (<SYSTEM TYPE="Formulae">)
+	formulaMatches := formulaTagRegex.FindAllStringSubmatch(cleaned, -1)
+	for _, match := range formulaMatches {
+		if len(match) > 1 {
+			formulaBody := strings.TrimSpace(match[1])
+			if formulaBody == "" {
+				return "", fmt.Errorf("empty TDL formula in <SYSTEM TYPE=\"Formulae\">; empty formulas cause Tally to crash with 'Can not understand, bad formula'")
+			}
+
+			// Check unbalanced double quotes in formula
+			if strings.Count(formulaBody, "\"")%2 != 0 {
+				return "", fmt.Errorf("unbalanced quotes in TDL formula %q; causes Tally to crash with 'Can not understand, bad formula'", formulaBody)
+			}
+
+			// Check unbalanced parentheses in formula
+			if strings.Count(formulaBody, "(") != strings.Count(formulaBody, ")") {
+				return "", fmt.Errorf("unbalanced parentheses in TDL formula %q; causes Tally to crash with 'Can not understand, bad formula'", formulaBody)
+			}
+
+			// Check invalid '==' operator (TDL uses single '=')
+			if strings.Contains(formulaBody, "==") {
+				return "", fmt.Errorf("invalid operator '==' in TDL formula %q; TDL uses single '='", formulaBody)
+			}
+
+			// Check for known crash patterns like $$Abs on compound Amount
+			if strings.Contains(formulaBody, "$$Abs:$Amount") {
+				return "", fmt.Errorf("unsupported operator $$Abs on compound Amount field in TDL formula; causes Tally C++ core type panic")
+			}
+		}
+	}
+
+	// 4. Verify that any collection <FILTER> has a matching formula definition
+	filterMatches := filterTagRegex.FindAllStringSubmatch(cleaned, -1)
+	if len(filterMatches) > 0 {
+		definedFormulas := make(map[string]bool)
+		for _, nameMatch := range formulaNameRegex.FindAllStringSubmatch(cleaned, -1) {
+			if len(nameMatch) > 1 {
+				definedFormulas[strings.ToLower(strings.TrimSpace(nameMatch[1]))] = true
+			}
+		}
+
+		for _, fMatch := range filterMatches {
+			if len(fMatch) > 1 {
+				fName := strings.TrimSpace(fMatch[1])
+				fNameLower := strings.ToLower(fName)
+				// If formulas are defined in the XML, the filter must match one of them or be a known TDL system filter
+				if len(definedFormulas) > 0 && !definedFormulas[fNameLower] && !isStandardTDLFilter(fNameLower) {
+					return "", fmt.Errorf("collection specifies <FILTER>%s</FILTER> but no matching <SYSTEM TYPE=\"Formulae\" NAME=\"%s\"> exists in XML; causes Tally to crash with 'Can not understand, bad formula'", fName, fName)
+				}
+			}
+		}
+	}
+
+	return cleaned, nil
+}
+
