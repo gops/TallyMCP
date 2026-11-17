@@ -259,12 +259,7 @@ func main() {
 	)
 
 	if cfg.Server.Transport != "stdio" {
-		originalPort = 8080
-		if _, portStr, err := net.SplitHostPort(cfg.Server.ListenAddress); err == nil {
-			if p, err := strconv.Atoi(portStr); err == nil {
-				originalPort = p
-			}
-		}
+		_, originalPort = mcp.ParseHostAndPort(cfg.Server.ListenAddress)
 
 		var err error
 		listener, _, activePort, portChanged, err = mcp.BindAvailableListener(cfg.Server.ListenAddress)

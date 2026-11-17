@@ -61,3 +61,67 @@ func TestBindAvailableListener_PortBusy(t *testing.T) {
 		t.Errorf("expected activePort > busyPort (%d), got %d", busyPort, activePort)
 	}
 }
+
+func TestParseHostAndPort(t *testing.T) {
+	tests := []struct {
+		input        string
+		expectedHost string
+		expectedPort int
+	}{
+		{"", "0.0.0.0", 8080},
+		{"0.0.0.0:8080", "0.0.0.0", 8080},
+		{"127.0.0.1:9000", "127.0.0.1", 9000},
+		{"8080", "0.0.0.0", 8080},
+		{"8085", "0.0.0.0", 8085},
+		{":8080", "0.0.0.0", 8080},
+		{"localhost", "localhost", 8080},
+		{"127.0.0.1", "127.0.0.1", 8080},
+		{"0.0.0.0:invalid", "0.0.0.0", 8080},
+	}
+
+	for _, tc := range tests {
+		h, p := mcp.ParseHostAndPort(tc.input)
+		if h != tc.expectedHost || p != tc.expectedPort {
+			t.Errorf("ParseHostAndPort(%q) = (%q, %d), expected (%q, %d)", tc.input, h, p, tc.expectedHost, tc.expectedPort)
+		}
+	}
+}
+
+func TestBindAvailableListener_SequentialIncrement(t *testing.T) {
+	// Let OS assign a base port
+	dummy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to find free port: %v", err)
+	}
+	basePort := dummy.Addr().(*net.TCPAddr).Port
+	dummy.Close()
+
+	// Occupy basePort
+	l1, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", basePort))
+	if err != nil {
+		t.Skip("could not bind basePort, skipping")
+	}
+	defer l1.Close()
+
+	// Occupy basePort + 1
+	nextPort := basePort + 1
+	l2, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", nextPort))
+	if err != nil {
+		t.Skip("could not bind nextPort, skipping")
+	}
+	defer l2.Close()
+
+	// Attempting to bind starting at basePort should skip basePort and nextPort, finding nextPort+1 or higher
+	l3, _, activePort, changed, err := mcp.BindAvailableListener(fmt.Sprintf("127.0.0.1:%d", basePort))
+	if err != nil {
+		t.Fatalf("BindAvailableListener failed: %v", err)
+	}
+	defer l3.Close()
+
+	if !changed {
+		t.Errorf("expected changed=true because %d and %d are occupied", basePort, nextPort)
+	}
+	if activePort <= nextPort {
+		t.Errorf("expected activePort > %d, got %d", nextPort, activePort)
+	}
+}

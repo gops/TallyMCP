@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -299,8 +300,60 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 // RunStdio starts serving MCP over Standard I/O.
+// It also spins up a background HTTP listener (trying port 8080 first, incrementing one by one if occupied)
+// so that generated PDF downloads (/files/) and health check (/health) remain accessible over HTTP.
 func (s *Server) RunStdio(ctx context.Context) error {
 	log.Println("[INFO] Starting MCP server over stdio transport...")
+
+	listenAddr := s.cfg.Server.ListenAddress
+	if listenAddr == "" {
+		listenAddr = "0.0.0.0:8080"
+	}
+	httpListener, _, activePort, _, err := BindAvailableListener(listenAddr)
+	if err == nil {
+		s.mu.Lock()
+		s.activePort = activePort
+		s.mu.Unlock()
+
+		s.handlers.SetBaseURL(fmt.Sprintf("http://localhost:%d", activePort))
+
+		mux := http.NewServeMux()
+		pdfDir := filepath.Join(os.TempDir(), "tally-mcp-pdf")
+		_ = os.MkdirAll(pdfDir, 0755)
+		mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(pdfDir))))
+
+		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":    "ok",
+				"transport": "stdio+http-files",
+				"port":      activePort,
+				"endpoints": map[string]string{
+					"files":  "/files",
+					"health": "/health",
+				},
+			})
+		})
+
+		httpServer := &http.Server{
+			Handler: mux,
+		}
+
+		go func() {
+			<-ctx.Done()
+			_ = httpServer.Shutdown(context.Background())
+		}()
+
+		go func() {
+			if serveErr := httpServer.Serve(httpListener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				log.Printf("[WARN] Background HTTP file server error: %v", serveErr)
+			}
+		}()
+		log.Printf("[INFO] Background HTTP file server active on http://localhost:%d/files/ for PDF delivery.", activePort)
+	} else {
+		log.Printf("[WARN] Could not bind HTTP port for PDF serving: %v (PDFs will still be saved to disk)", err)
+	}
+
 	stdioServer := server.NewStdioServer(s.mcpServer)
 	return stdioServer.Listen(ctx, nil, nil)
 }
