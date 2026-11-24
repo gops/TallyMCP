@@ -16,8 +16,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Server.Transport != "sse" {
 		t.Errorf("expected transport sse, got %s", cfg.Server.Transport)
 	}
-	if cfg.Server.PayloadFormat != "compact_json" {
-		t.Errorf("expected payload format compact_json, got %s", cfg.Server.PayloadFormat)
+	if cfg.Server.PayloadFormat != "toon" {
+		t.Errorf("expected payload format toon, got %s", cfg.Server.PayloadFormat)
 	}
 	if cfg.Tally.URL != "http://localhost:9000" {
 		t.Errorf("expected tally url http://localhost:9000, got %s", cfg.Tally.URL)

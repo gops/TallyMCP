@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,27 @@ import (
 
 	"tally-mcp/internal/config"
 )
+
+var (
+	reInvalidXMLCharRef = regexp.MustCompile(`&#(?:0*[0-8]|0*1[1-2]|0*1[4-9]|0*2[0-9]|0*3[0-1]);`)
+	reInvalidHexCharRef = regexp.MustCompile(`(?i)&#x(?:0*[0-8]|0*[bB]|0*[cC]|0*[e-fE-F]|0*1[0-9a-fA-F]);`)
+)
+
+// SanitizeTallyResponseXML strips illegal XML 1.0 character entities and raw non-printable control bytes.
+func SanitizeTallyResponseXML(data []byte) []byte {
+	// 1. Remove illegal numeric entities (&#4;, &#x04;, etc.)
+	data = reInvalidXMLCharRef.ReplaceAll(data, nil)
+	data = reInvalidHexCharRef.ReplaceAll(data, nil)
+
+	// 2. Strip raw ASCII control bytes except \t (0x09), \n (0x0A), and \r (0x0D)
+	clean := make([]byte, 0, len(data))
+	for _, b := range data {
+		if b >= 0x20 || b == 0x09 || b == 0x0A || b == 0x0D {
+			clean = append(clean, b)
+		}
+	}
+	return clean
+}
 
 // Client handles communication with Tally ERP 9 / TallyPrime XML Server.
 type Client struct {
@@ -180,6 +202,7 @@ func (c *Client) doHTTP(ctx context.Context, xmlContent string) ([]byte, error) 
 	if err != nil {
 		return nil, fmt.Errorf("reading Tally response: %w", err)
 	}
+	body = SanitizeTallyResponseXML(body)
 
 	if err := CheckTallyError(body); err != nil {
 		return body, err
@@ -565,25 +588,49 @@ func (c *Client) FilterStockItems(ctx context.Context, group, search string, lim
 	}, nil
 }
 
+type rawLedgerEntryXML struct {
+	LedgerName     string  `xml:"LEDGERNAME"`
+	LedgerNameAttr string  `xml:"LEDGERNAME,attr"`
+	Amount         float64 `xml:"AMOUNT"`
+	AmountAttr     float64 `xml:"AMOUNT,attr"`
+}
+
+func (r rawLedgerEntryXML) toLedgerEntryRecord() LedgerEntryRecord {
+	name := r.LedgerName
+	if name == "" {
+		name = r.LedgerNameAttr
+	}
+	amt := r.Amount
+	if amt == 0 && r.AmountAttr != 0 {
+		amt = r.AmountAttr
+	}
+	return LedgerEntryRecord{
+		LedgerName: strings.TrimSpace(name),
+		Amount:     amt,
+	}
+}
+
 type rawVoucherXML struct {
-	MasterID            string  `xml:"MASTERID"`
-	MasterIDAttr        string  `xml:"MASTERID,attr"`
-	VoucherTypeName     string  `xml:"VOUCHERTYPENAME"`
-	VoucherTypeNameAttr string  `xml:"VOUCHERTYPENAME,attr"`
-	VoucherNumber       string  `xml:"VOUCHERNUMBER"`
-	VoucherNumberAttr   string  `xml:"VOUCHERNUMBER,attr"`
-	Date                string  `xml:"DATE"`
-	DateAttr            string  `xml:"DATE,attr"`
-	EffectiveDate       string  `xml:"EFFECTIVEDATE"`
-	EffectiveDateAttr   string  `xml:"EFFECTIVEDATE,attr"`
-	Reference           string  `xml:"REFERENCE"`
-	ReferenceAttr       string  `xml:"REFERENCE,attr"`
-	PartyLedgerName     string  `xml:"PARTYLEDGERNAME"`
-	PartyLedgerNameAttr string  `xml:"PARTYLEDGERNAME,attr"`
-	Amount              float64 `xml:"AMOUNT"`
-	AmountAttr          float64 `xml:"AMOUNT,attr"`
-	Narration           string  `xml:"NARRATION"`
-	NarrationAttr       string  `xml:"NARRATION,attr"`
+	MasterID            string              `xml:"MASTERID"`
+	MasterIDAttr        string              `xml:"MASTERID,attr"`
+	VoucherTypeName     string              `xml:"VOUCHERTYPENAME"`
+	VoucherTypeNameAttr string              `xml:"VOUCHERTYPENAME,attr"`
+	VoucherNumber       string              `xml:"VOUCHERNUMBER"`
+	VoucherNumberAttr   string              `xml:"VOUCHERNUMBER,attr"`
+	Date                string              `xml:"DATE"`
+	DateAttr            string              `xml:"DATE,attr"`
+	EffectiveDate       string              `xml:"EFFECTIVEDATE"`
+	EffectiveDateAttr   string              `xml:"EFFECTIVEDATE,attr"`
+	Reference           string              `xml:"REFERENCE"`
+	ReferenceAttr       string              `xml:"REFERENCE,attr"`
+	PartyLedgerName     string              `xml:"PARTYLEDGERNAME"`
+	PartyLedgerNameAttr string              `xml:"PARTYLEDGERNAME,attr"`
+	Amount              float64             `xml:"AMOUNT"`
+	AmountAttr          float64             `xml:"AMOUNT,attr"`
+	Narration           string              `xml:"NARRATION"`
+	NarrationAttr       string              `xml:"NARRATION,attr"`
+	AllLedgerEntries    []rawLedgerEntryXML `xml:"ALLLEDGERENTRIES.LIST"`
+	LedgerEntries       []rawLedgerEntryXML `xml:"LEDGERENTRIES.LIST"`
 }
 
 func (r rawVoucherXML) toVoucherItem() VoucherItem {
@@ -625,21 +672,28 @@ func (r rawVoucherXML) toVoucherItem() VoucherItem {
 	if item.Narration == "" {
 		item.Narration = r.NarrationAttr
 	}
+
+	var entries []LedgerEntryRecord
+	if len(r.AllLedgerEntries) > 0 {
+		for _, e := range r.AllLedgerEntries {
+			rec := e.toLedgerEntryRecord()
+			if rec.LedgerName != "" || rec.Amount != 0 {
+				entries = append(entries, rec)
+			}
+		}
+	} else if len(r.LedgerEntries) > 0 {
+		for _, e := range r.LedgerEntries {
+			rec := e.toLedgerEntryRecord()
+			if rec.LedgerName != "" || rec.Amount != 0 {
+				entries = append(entries, rec)
+			}
+		}
+	}
+	item.LedgerEntries = entries
 	return item
 }
 
-// FilterVouchers queries vouchers from Tally using TDL server-side pushdown filters and in-memory precision filtering.
-func (c *Client) FilterVouchers(ctx context.Context, opts VoucherFilterOptions) ([]VoucherItem, error) {
-	xmlQuery, err := BuildFilteredListVouchersXML(c.defaultCompany, opts)
-	if err != nil {
-		return nil, err
-	}
-
-	raw, err := c.ExecuteRawXML(ctx, xmlQuery)
-	if err != nil {
-		return nil, err
-	}
-
+func parseVouchersFromXML(raw []byte) ([]VoucherItem, error) {
 	var env struct {
 		XMLName xml.Name `xml:"ENVELOPE"`
 		Body    struct {
@@ -647,7 +701,7 @@ func (c *Client) FilterVouchers(ctx context.Context, opts VoucherFilterOptions) 
 				TallyMessages []struct {
 					Voucher *rawVoucherXML `xml:"VOUCHER"`
 				} `xml:"TALLYMESSAGE"`
-				Vouchers []rawVoucherXML `xml:"VOUCHER"`
+				Vouchers   []rawVoucherXML `xml:"VOUCHER"`
 				Collection struct {
 					Vouchers []rawVoucherXML `xml:"VOUCHER"`
 				} `xml:"COLLECTION"`
@@ -678,8 +732,42 @@ func (c *Client) FilterVouchers(ctx context.Context, opts VoucherFilterOptions) 
 			result = append(result, rawV.toVoucherItem())
 		}
 	}
+	return result, nil
+}
 
-	return filterVoucherItems(result, opts), nil
+// FilterVouchers queries vouchers from Tally using TDL server-side pushdown filters and in-memory precision filtering.
+func (c *Client) FilterVouchers(ctx context.Context, opts VoucherFilterOptions) ([]VoucherItem, error) {
+	xmlQuery, err := BuildFilteredListVouchersXML(c.defaultCompany, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := c.ExecuteRawXML(ctx, xmlQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	vouchers, err := parseVouchersFromXML(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	return filterVoucherItems(vouchers, opts), nil
+}
+
+// GetLedgerStatementVouchers fetches vouchers touching a specific ledger account within a date range.
+func (c *Client) GetLedgerStatementVouchers(ctx context.Context, ledgerName, fromDate, toDate string) ([]VoucherItem, error) {
+	xmlQuery, err := BuildLedgerStatementXML(c.defaultCompany, ledgerName, fromDate, toDate)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := c.ExecuteRawXML(ctx, xmlQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	return parseVouchersFromXML(raw)
 }
 
 // FilterVouchersPaginated queries vouchers with server-side pushdown and returns a paginated slice.
@@ -735,6 +823,7 @@ func (c *Client) FilterVouchersPaginated(ctx context.Context, opts VoucherFilter
 func filterVoucherItems(items []VoucherItem, opts VoucherFilterOptions) []VoucherItem {
 	var filtered []VoucherItem
 	partyLower := strings.ToLower(strings.TrimSpace(opts.Party))
+	ledgerLower := strings.ToLower(strings.TrimSpace(opts.Ledger))
 	searchLower := strings.ToLower(strings.TrimSpace(opts.Search))
 
 	for _, item := range items {
@@ -742,6 +831,22 @@ func filterVoucherItems(items []VoucherItem, opts VoucherFilterOptions) []Vouche
 		if partyLower != "" {
 			itemParty := strings.ToLower(item.PartyLedgerName)
 			if !strings.Contains(itemParty, partyLower) {
+				continue
+			}
+		}
+
+		// Ledger check (matches party ledger or any ledger entry in the split)
+		if ledgerLower != "" {
+			matched := strings.Contains(strings.ToLower(item.PartyLedgerName), ledgerLower)
+			if !matched {
+				for _, entry := range item.LedgerEntries {
+					if strings.Contains(strings.ToLower(entry.LedgerName), ledgerLower) {
+						matched = true
+						break
+					}
+				}
+			}
+			if !matched {
 				continue
 			}
 		}

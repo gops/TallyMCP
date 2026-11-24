@@ -154,6 +154,7 @@ type VoucherFilterOptions struct {
 	FromDate        string   `json:"from_date,omitempty"`
 	ToDate          string   `json:"to_date,omitempty"`
 	Party           string   `json:"party,omitempty"`
+	Ledger          string   `json:"ledger,omitempty"`
 	Amount          *float64 `json:"amount,omitempty"`
 	AmountTolerance *float64 `json:"amount_tolerance,omitempty"`
 	MinAmount       *float64 `json:"min_amount,omitempty"`
@@ -185,6 +186,9 @@ type PaginatedVouchers struct {
 	Count      int           `json:"count"`
 	HasMore    bool          `json:"has_more"`
 	NextOffset *int          `json:"next_offset,omitempty"`
+	FromDate   string        `json:"from_date,omitempty"`
+	ToDate     string        `json:"to_date,omitempty"`
+	Note       string        `json:"note,omitempty"`
 	Vouchers   []VoucherItem `json:"vouchers"`
 }
 
@@ -193,6 +197,32 @@ type LedgerEntryRecord struct {
 	LedgerName string  `xml:"LEDGERNAME" json:"ledger_name"`
 	Amount     float64 `xml:"AMOUNT" json:"amount"`
 	IsDeemedPositive string `xml:"ISDEEMEDPOSITIVE,omitempty" json:"is_deemed_positive,omitempty"`
+}
+
+// LedgerStatementEntry represents a single transaction entry in a ledger statement.
+type LedgerStatementEntry struct {
+	Date          string  `json:"date"`
+	VoucherType   string  `json:"voucher_type"`
+	VoucherNumber string  `json:"voucher_number"`
+	ContraLedger  string  `json:"contra_ledger"`
+	Debit         float64 `json:"debit"`
+	Credit        float64 `json:"credit"`
+	Narration     string  `json:"narration"`
+}
+
+// LedgerStatementResult represents the complete ledger statement response.
+type LedgerStatementResult struct {
+	LedgerName         string                 `json:"ledger_name"`
+	Parent             string                 `json:"parent"`
+	FromDate           string                 `json:"from_date"`
+	ToDate             string                 `json:"to_date"`
+	OpeningBalance     float64                `json:"opening_balance"`
+	TotalDebit         float64                `json:"total_debit"`
+	TotalCredit        float64                `json:"total_credit"`
+	ClosingBalance     float64                `json:"closing_balance"`
+	ClosingBalanceType string                 `json:"closing_balance_type"`
+	EntriesCount       int                    `json:"entries_count"`
+	Entries            []LedgerStatementEntry `json:"entries"`
 }
 
 // VoucherDetail represents a full voucher drilldown with complete accounting and inventory splits.

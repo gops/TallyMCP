@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"text/template"
+	"time"
 )
 
 // Standard TDL XML envelopes for Tally ERP 9 and TallyPrime.
@@ -125,8 +126,42 @@ const listVouchersTemplate = `<ENVELOPE>
         <TDLMESSAGE>
           <COLLECTION NAME="VoucherColl" ISMODIFY="No" ISFIXED="No">
             <TYPE>Voucher</TYPE>
-            <FETCH>Date, VoucherTypeName, VoucherNumber, Reference, PartyLedgerName, Amount, Narration, MasterId</FETCH>
+            <FETCH>Date, VoucherTypeName, VoucherNumber, Reference, PartyLedgerName, Amount, Narration, MasterId, AllLedgerEntries.*</FETCH>
           </COLLECTION>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>`
+
+const ledgerVouchersTemplate = `<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>LedgerStatementColl</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
+        {{if .FromDate}}<SVFROMDATE>{{.FromDate}}</SVFROMDATE>{{end}}
+        {{if .ToDate}}<SVTODATE>{{.ToDate}}</SVTODATE>{{end}}
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="LedgerStatementColl">
+            <TYPE>Voucher</TYPE>
+            <FILTER>LedgerMatchFilter</FILTER>
+            <FETCH>Date, VoucherTypeName, VoucherNumber, Reference, PartyLedgerName, Narration, MasterId, AllLedgerEntries.*</FETCH>
+          </COLLECTION>
+          <SYSTEM TYPE="Formulae" NAME="LedgerMatchFilter">
+            $LedgerEntries[1, @@IsLedgerMatch].LedgerName = "{{.LedgerName}}" OR $AllLedgerEntries[1, @@IsLedgerMatch].LedgerName = "{{.LedgerName}}"
+          </SYSTEM>
+          <SYSTEM TYPE="Formulae" NAME="IsLedgerMatch">
+            $LedgerName = "{{.LedgerName}}"
+          </SYSTEM>
         </TDLMESSAGE>
       </TDL>
     </DESC>
@@ -412,6 +447,40 @@ func CleanDate(d string) string {
 	d = strings.ReplaceAll(d, "-", "")
 	d = strings.ReplaceAll(d, "/", "")
 	return d
+}
+
+// CurrentFinancialYearStart returns the YYYYMMDD start date (April 1st) of the Indian Financial Year for the given time.
+// In India, the financial year runs from April 1 to March 31.
+func CurrentFinancialYearStart(t time.Time) string {
+	year := t.Year()
+	if t.Month() < time.April {
+		year--
+	}
+	return fmt.Sprintf("%04d0401", year)
+}
+
+// CurrentFinancialYearEnd returns the YYYYMMDD end date (March 31st) of the Indian Financial Year for the given time.
+func CurrentFinancialYearEnd(t time.Time) string {
+	year := t.Year()
+	if t.Month() >= time.April {
+		year++
+	}
+	return fmt.Sprintf("%04d0331", year)
+}
+
+// BuildLedgerStatementXML generates the XML for exporting vouchers for a specific ledger statement.
+func BuildLedgerStatementXML(company, ledgerName, fromDate, toDate string) (string, error) {
+	cleanName := SanitizeTDLString(ledgerName)
+	if cleanName == "" {
+		return "", fmt.Errorf("ledger name must not be empty")
+	}
+	data := map[string]any{
+		"Company":    XMLEscapeText(company),
+		"LedgerName": XMLEscapeText(cleanName),
+		"FromDate":   CleanDate(fromDate),
+		"ToDate":     CleanDate(toDate),
+	}
+	return executeTemplate("ledgerVouchers", ledgerVouchersTemplate, data)
 }
 
 // BuildListVouchersXML generates the XML for exporting vouchers with optional date and type filters.

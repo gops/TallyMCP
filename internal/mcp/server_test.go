@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
+
 	"tally-mcp/internal/config"
 	mcppkg "tally-mcp/internal/mcp"
 	"tally-mcp/internal/tally"
@@ -40,7 +42,18 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 		<COMPANY><NAME>Demo Company</NAME></COMPANY>
 		<COMPANY><NAME>ACME Corp</NAME></COMPANY>
 		<VOUCHER VOUCHERNUMBER="101" DATE="20261031" VOUCHERTYPENAME="Sales" PARTYLEDGERNAME="Tata Steel" AMOUNT="-50000.00"></VOUCHER>
+		<VOUCHER VOUCHERNUMBER="004200" DATE="20260410" VOUCHERTYPENAME="Receipt" PARTYLEDGERNAME="IDBI BANK-000198" NARRATION="AT NAVI MUMBAI - KALAMBOLI, 004200-X-LASER">
+			<ALLLEDGERENTRIES.LIST>
+				<LEDGERNAME>SUSPANCE A/C.</LEDGERNAME>
+				<AMOUNT>206000.00</AMOUNT>
+			</ALLLEDGERENTRIES.LIST>
+			<ALLLEDGERENTRIES.LIST>
+				<LEDGERNAME>IDBI BANK-000198</LEDGERNAME>
+				<AMOUNT>-206000.00</AMOUNT>
+			</ALLLEDGERENTRIES.LIST>
+		</VOUCHER>
 		<LEDGER NAME="Cash"><PARENT>Cash-in-Hand</PARENT><CLOSINGBALANCE>15000.00</CLOSINGBALANCE></LEDGER>
+		<LEDGER NAME="SUSPANCE A/C."><PARENT>Suspense A/c</PARENT><OPENINGBALANCE>0.00</OPENINGBALANCE><CLOSINGBALANCE>206000.00</CLOSINGBALANCE></LEDGER>
 		<STOCKITEM NAME="Pipes"><PARENT>Hardware</PARENT><CLOSINGBALANCE>100 Nos</CLOSINGBALANCE><CLOSINGVALUE>5000.00</CLOSINGVALUE></STOCKITEM>
 	</COLLECTION></DATA></BODY></ENVELOPE>`
 	tallyClient.SetTransport(mockRoundTripper(func(req *http.Request) *http.Response {
@@ -230,6 +243,8 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 			"tally_start",
 			"tally_list_companies",
 			"tally_list_ledgers",
+			"tally_get_ledger",
+			"tally_get_ledger_statement",
 			"tally_list_vouchers",
 			"tally_get_voucher",
 			"tally_get_stock_summary",
@@ -750,6 +765,223 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 		}
 	})
 
+	// 15. Test Prompts (prompts/list and prompts/get)
+	t.Run("POST /mcp prompts/list and prompts/get", func(t *testing.T) {
+		// prompts/list
+		listPayload := `{"jsonrpc":"2.0","id":151,"method":"prompts/list","params":{}}`
+		req, _ := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewBufferString(listPayload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp prompts/list failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var listResp map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+			t.Fatalf("decode prompts/list failed: %v", err)
+		}
+		resObj, _ := listResp["result"].(map[string]any)
+		promptsList, ok := resObj["prompts"].([]any)
+		if !ok || len(promptsList) < 2 {
+			t.Fatalf("expected at least 2 prompts, got %v", promptsList)
+		}
+
+		// prompts/get tally_accounting_rules
+		getPayload := `{"jsonrpc":"2.0","id":152,"method":"prompts/get","params":{"name":"tally_accounting_rules"}}`
+		req2, _ := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewBufferString(getPayload))
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req2.Header.Set("Mcp-Session-Id", sessionID)
+		}
+		resp2, err := http.DefaultClient.Do(req2)
+		if err != nil {
+			t.Fatalf("POST /mcp prompts/get failed: %v", err)
+		}
+		defer resp2.Body.Close()
+
+		var getResp map[string]any
+		if err := json.NewDecoder(resp2.Body).Decode(&getResp); err != nil {
+			t.Fatalf("decode prompts/get failed: %v", err)
+		}
+		result2, _ := getResp["result"].(map[string]any)
+		messages, ok := result2["messages"].([]any)
+		if !ok || len(messages) == 0 {
+			t.Fatalf("expected non-empty prompt messages: %v", result2)
+		}
+	})
+
+	// 16. Test Resources (resources/list and resources/read)
+	t.Run("POST /mcp resources/list and resources/read", func(t *testing.T) {
+		// resources/list
+		listPayload := `{"jsonrpc":"2.0","id":161,"method":"resources/list","params":{}}`
+		req, _ := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewBufferString(listPayload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp resources/list failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var listResp map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+			t.Fatalf("decode resources/list failed: %v", err)
+		}
+		resObj, _ := listResp["result"].(map[string]any)
+		resourcesList, ok := resObj["resources"].([]any)
+		if !ok || len(resourcesList) < 3 {
+			t.Fatalf("expected at least 3 resources, got %v", resourcesList)
+		}
+
+		// resources/read tally://financial-summary
+		readPayload := `{"jsonrpc":"2.0","id":162,"method":"resources/read","params":{"uri":"tally://financial-summary"}}`
+		req2, _ := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewBufferString(readPayload))
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req2.Header.Set("Mcp-Session-Id", sessionID)
+		}
+		resp2, err := http.DefaultClient.Do(req2)
+		if err != nil {
+			t.Fatalf("POST /mcp resources/read failed: %v", err)
+		}
+		defer resp2.Body.Close()
+
+		var readResp map[string]any
+		if err := json.NewDecoder(resp2.Body).Decode(&readResp); err != nil {
+			t.Fatalf("decode resources/read failed: %v", err)
+		}
+		result2, _ := readResp["result"].(map[string]any)
+		contents, ok := result2["contents"].([]any)
+		if !ok || len(contents) == 0 {
+			t.Fatalf("expected contents in resources/read: %v", result2)
+		}
+	})
+
+	// 17. Test default date guard in tally_list_vouchers
+	t.Run("POST /mcp tools/call tally_list_vouchers date default note", func(t *testing.T) {
+		callPayload := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      171,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name": "tally_list_vouchers",
+				"arguments": map[string]any{
+					"limit": 5,
+				},
+			},
+		}
+		data, _ := json.Marshal(callPayload)
+
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp tally_list_vouchers failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var rpcResp map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+			t.Fatalf("decode response failed: %v", err)
+		}
+		result, _ := rpcResp["result"].(map[string]any)
+		content, _ := result["content"].([]any)
+		firstItem := content[0].(map[string]any)
+		textVal := firstItem["text"].(string)
+
+		if !strings.Contains(textVal, "from_date:") || !strings.Contains(textVal, "financial year") {
+			t.Errorf("expected from_date and financial year note in response, got:\n%s", textVal)
+		}
+	})
+
+	// 18. Test Streamable HTTP tools/call tally_get_ledger_statement
+	t.Run("POST /mcp tools/call tally_get_ledger_statement", func(t *testing.T) {
+		callPayload := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      181,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name": "tally_get_ledger_statement",
+				"arguments": map[string]any{
+					"ledger_name": "SUSPANCE A/C.",
+					"from_date":   "20260401",
+					"to_date":     "20261031",
+					"format":      "json",
+				},
+			},
+		}
+		data, _ := json.Marshal(callPayload)
+
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp tally_get_ledger_statement failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var rpcResp map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+			t.Fatalf("decode response failed: %v", err)
+		}
+		result, _ := rpcResp["result"].(map[string]any)
+		content, _ := result["content"].([]any)
+		firstItem := content[0].(map[string]any)
+		textVal := firstItem["text"].(string)
+
+		var stmt map[string]any
+		if err := json.Unmarshal([]byte(textVal), &stmt); err != nil {
+			t.Fatalf("failed to unmarshal JSON response: %v\ntext: %s", err, textVal)
+		}
+
+		if stmt["ledger_name"] != "SUSPANCE A/C." {
+			t.Errorf("expected ledger_name 'SUSPANCE A/C.', got %v", stmt["ledger_name"])
+		}
+		if stmt["parent"] != "Suspense A/c" {
+			t.Errorf("expected parent 'Suspense A/c', got %v", stmt["parent"])
+		}
+		if stmt["closing_balance_type"] != "Cr" {
+			t.Errorf("expected closing_balance_type 'Cr', got %v", stmt["closing_balance_type"])
+		}
+		entries, ok := stmt["entries"].([]any)
+		if !ok || len(entries) == 0 {
+			t.Fatalf("expected entries in statement, got: %v", stmt)
+		}
+		entry := entries[0].(map[string]any)
+		if entry["contra_ledger"] != "IDBI BANK-000198" {
+			t.Errorf("expected contra_ledger 'IDBI BANK-000198', got %v", entry["contra_ledger"])
+		}
+		if entry["credit"] != 206000.0 {
+			t.Errorf("expected credit 206000.0, got %v", entry["credit"])
+		}
+	})
+
 	// Clean shutdown
 	cancel()
 	select {
@@ -910,5 +1142,108 @@ func TestServerDefaultPayloadFormatToon(t *testing.T) {
 	// Since server default payload_format is "toon", output should be in TOON tabular format "[2]{name}:"
 	if !strings.Contains(textVal, "[2]{name}:") && !strings.Contains(textVal, "Demo Company") {
 		t.Errorf("expected default TOON output when payload_format is 'toon', got:\n%s", textVal)
+	}
+}
+
+func TestHandleGetLedgerStatement(t *testing.T) {
+	mockXML := `<ENVELOPE><BODY><DATA><COLLECTION>
+		<LEDGER NAME="SUSPANCE A/C.">
+			<PARENT>Suspense A/c</PARENT>
+			<OPENINGBALANCE>0.00</OPENINGBALANCE>
+		</LEDGER>
+		<VOUCHER VOUCHERNUMBER="004200" DATE="20260410" VOUCHERTYPENAME="Receipt" PARTYLEDGERNAME="IDBI BANK-000198" NARRATION="AT NAVI MUMBAI - KALAMBOLI, 004200-X-LASER">
+			<ALLLEDGERENTRIES.LIST>
+				<LEDGERNAME>SUSPANCE A/C.</LEDGERNAME>
+				<AMOUNT>206000.00</AMOUNT>
+			</ALLLEDGERENTRIES.LIST>
+			<ALLLEDGERENTRIES.LIST>
+				<LEDGERNAME>IDBI BANK-000198</LEDGERNAME>
+				<AMOUNT>-206000.00</AMOUNT>
+			</ALLLEDGERENTRIES.LIST>
+		</VOUCHER>
+		<VOUCHER VOUCHERNUMBER="PV-99" DATE="20260415" VOUCHERTYPENAME="Payment" PARTYLEDGERNAME="HDFC Bank" NARRATION="EXPENSE ADJUSTMENT">
+			<ALLLEDGERENTRIES.LIST>
+				<LEDGERNAME>SUSPANCE A/C.</LEDGERNAME>
+				<AMOUNT>-50000.00</AMOUNT>
+			</ALLLEDGERENTRIES.LIST>
+			<ALLLEDGERENTRIES.LIST>
+				<LEDGERNAME>HDFC Bank</LEDGERNAME>
+				<AMOUNT>50000.00</AMOUNT>
+			</ALLLEDGERENTRIES.LIST>
+		</VOUCHER>
+	</COLLECTION></DATA></BODY></ENVELOPE>`
+
+	tallyClient := tally.NewClient(config.TallyConfig{
+		URL: "http://mock-tally:9000",
+	})
+	tallyClient.SetTransport(mockRoundTripper(func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(mockXML)),
+			Header:     make(http.Header),
+		}
+	}))
+
+	handlers := mcppkg.NewToolHandlers(tallyClient, "v1.0.8", "test/repo", "json")
+	ctx := context.Background()
+
+	// 1. Missing ledger_name should return error
+	resErr, err := handlers.HandleGetLedgerStatement(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "tally_get_ledger_statement",
+			Arguments: map[string]any{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resErr.IsError {
+		t.Errorf("expected error when ledger_name is missing")
+	}
+
+	// 2. Successful statement with both Debit and Credit vouchers
+	res, err := handlers.HandleGetLedgerStatement(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name: "tally_get_ledger_statement",
+			Arguments: map[string]any{
+				"ledger_name": "SUSPANCE A/C.",
+				"format":      "json",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleGetLedgerStatement failed: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("HandleGetLedgerStatement returned error result: %v", res)
+	}
+
+	text := res.Content[0].(mcp.TextContent).Text
+	var stmt tally.LedgerStatementResult
+	if err := json.Unmarshal([]byte(text), &stmt); err != nil {
+		t.Fatalf("failed to decode statement result: %v, text: %s", err, text)
+	}
+
+	if stmt.LedgerName != "SUSPANCE A/C." {
+		t.Errorf("expected ledger_name 'SUSPANCE A/C.', got %q", stmt.LedgerName)
+	}
+	if stmt.Parent != "Suspense A/c" {
+		t.Errorf("expected parent 'Suspense A/c', got %q", stmt.Parent)
+	}
+	if stmt.EntriesCount != 2 {
+		t.Errorf("expected 2 entries, got %d", stmt.EntriesCount)
+	}
+	if stmt.TotalCredit != 206000.0 {
+		t.Errorf("expected TotalCredit 206000.0, got %f", stmt.TotalCredit)
+	}
+	if stmt.TotalDebit != 50000.0 {
+		t.Errorf("expected TotalDebit 50000.0, got %f", stmt.TotalDebit)
+	}
+	expectedClosing := 156000.0 // 206000 - 50000
+	if stmt.ClosingBalance != expectedClosing {
+		t.Errorf("expected ClosingBalance %f, got %f", expectedClosing, stmt.ClosingBalance)
+	}
+	if stmt.ClosingBalanceType != "Cr" {
+		t.Errorf("expected ClosingBalanceType 'Cr', got %s", stmt.ClosingBalanceType)
 	}
 }

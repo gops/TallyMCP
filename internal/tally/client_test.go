@@ -3,6 +3,7 @@ package tally_test
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"io"
 	"net/http"
 	"strings"
@@ -1247,5 +1248,195 @@ func TestFilterStockItems(t *testing.T) {
 	}
 	if compactRes.Total != 3 || compactRes.Count != 1 || !compactRes.HasMore {
 		t.Errorf("unexpected compact pagination result: %+v", compactRes)
+	}
+}
+
+func TestSanitizeTallyResponseXML(t *testing.T) {
+	// 1. Verify stripping illegal entities &#4;, &#x04;, &#0;, &#8;, etc. and raw control characters
+	rawWithEntities := []byte(`<DATA><GSTCLASS>&#4; Not Applicable</GSTCLASS><HEX>&#x04; Hex</HEX><ZERO>&#0; Zero</ZERO><EIGHT>&#8; Eight</EIGHT><RAW>Raw` + "\x04" + `Control</RAW></DATA>`)
+	cleaned := tally.SanitizeTallyResponseXML(rawWithEntities)
+	cleanedStr := string(cleaned)
+
+	for _, illegal := range []string{"&#4;", "&#x04;", "&#0;", "&#8;", "\x04"} {
+		if strings.Contains(cleanedStr, illegal) {
+			t.Errorf("expected %q to be stripped, got: %s", illegal, cleanedStr)
+		}
+	}
+
+	// 2. Verify preserving valid text, valid unicode, and whitespace (\n, \t, \r)
+	validInput := []byte("<NOTE>\n\tValid Text\r With Unicode: हिंदी, ₹100 &amp; &#32; space</NOTE>")
+	validCleaned := tally.SanitizeTallyResponseXML(validInput)
+	validCleanedStr := string(validCleaned)
+
+	if !strings.Contains(validCleanedStr, "\n") || !strings.Contains(validCleanedStr, "\t") || !strings.Contains(validCleanedStr, "\r") {
+		t.Errorf("expected whitespace (\\n, \\t, \\r) to be preserved, got: %q", validCleanedStr)
+	}
+	if !strings.Contains(validCleanedStr, "हिंदी") || !strings.Contains(validCleanedStr, "₹100") {
+		t.Errorf("expected unicode characters to be preserved, got: %s", validCleanedStr)
+	}
+
+	// 3. Verify successfully unmarshaling XML that previously failed with illegal character code U+0004
+	failingXML := []byte(`<ENVELOPE>
+		<BODY>
+			<DATA>
+				<COLLECTION>
+					<LEDGER NAME="SUSPANCE A/C.">
+						<GSTCLASS>&#4; Not Applicable</GSTCLASS>
+						<PARENT>Suspense A/c</PARENT>
+						<OPENINGBALANCE>0.00</OPENINGBALANCE>
+					</LEDGER>
+				</COLLECTION>
+			</DATA>
+		</BODY>
+	</ENVELOPE>`)
+
+	// Raw unmarshal MUST fail with illegal character code U+0004
+	var rawTarget struct {
+		XMLName xml.Name `xml:"ENVELOPE"`
+	}
+	rawErr := xml.Unmarshal(failingXML, &rawTarget)
+	if rawErr == nil {
+		t.Fatalf("expected raw unmarshal of XML with &#4; to fail, but it succeeded")
+	}
+	if !strings.Contains(rawErr.Error(), "illegal character code U+0004") {
+		t.Logf("raw unmarshal error: %v", rawErr)
+	}
+
+	// Sanitized unmarshal MUST succeed cleanly
+	sanitizedXML := tally.SanitizeTallyResponseXML(failingXML)
+	var cleanTarget struct {
+		XMLName xml.Name `xml:"ENVELOPE"`
+		Body    struct {
+			Data struct {
+				Collection struct {
+					Ledger struct {
+						Name     string  `xml:"NAME,attr"`
+						GSTClass string  `xml:"GSTCLASS"`
+						Parent   string  `xml:"PARENT"`
+						Opening  float64 `xml:"OPENINGBALANCE"`
+					} `xml:"LEDGER"`
+				} `xml:"COLLECTION"`
+			} `xml:"DATA"`
+		} `xml:"BODY"`
+	}
+
+	if err := xml.Unmarshal(sanitizedXML, &cleanTarget); err != nil {
+		t.Fatalf("unmarshal of sanitized XML failed: %v", err)
+	}
+	if cleanTarget.Body.Data.Collection.Ledger.Name != "SUSPANCE A/C." {
+		t.Errorf("expected ledger name 'SUSPANCE A/C.', got %q", cleanTarget.Body.Data.Collection.Ledger.Name)
+	}
+	if strings.TrimSpace(cleanTarget.Body.Data.Collection.Ledger.GSTClass) != "Not Applicable" {
+		t.Errorf("expected GST class 'Not Applicable', got %q", cleanTarget.Body.Data.Collection.Ledger.GSTClass)
+	}
+}
+
+func TestBuildLedgerStatementXML(t *testing.T) {
+	xmlStr, err := tally.BuildLedgerStatementXML("MyCompany", "SUSPANCE A/C.", "20260401", "20261031")
+	if err != nil {
+		t.Fatalf("BuildLedgerStatementXML failed: %v", err)
+	}
+
+	if !strings.Contains(xmlStr, "<ID>LedgerStatementColl</ID>") {
+		t.Errorf("expected LedgerStatementColl ID in XML, got: %s", xmlStr)
+	}
+	if !strings.Contains(xmlStr, "<SVFROMDATE>20260401</SVFROMDATE>") {
+		t.Errorf("expected SVFROMDATE in XML, got: %s", xmlStr)
+	}
+	if !strings.Contains(xmlStr, "<SVTODATE>20261031</SVTODATE>") {
+		t.Errorf("expected SVTODATE in XML, got: %s", xmlStr)
+	}
+	if !strings.Contains(xmlStr, `SUSPANCE A/C.`) {
+		t.Errorf("expected ledger name in XML, got: %s", xmlStr)
+	}
+	if !strings.Contains(xmlStr, "AllLedgerEntries.*") {
+		t.Errorf("expected AllLedgerEntries.* in FETCH, got: %s", xmlStr)
+	}
+
+	// Guard check: passing empty ledger name should fail
+	if _, err := tally.BuildLedgerStatementXML("MyCompany", "   ", "20260401", "20261031"); err == nil {
+		t.Errorf("expected error for empty ledger name, got nil")
+	}
+}
+
+func TestCurrentFinancialYearEnd(t *testing.T) {
+	// Case 1: In November 2026 (Month >= April), FY end should be 20270331
+	t1 := time.Date(2026, time.November, 24, 0, 0, 0, 0, time.UTC)
+	if end := tally.CurrentFinancialYearEnd(t1); end != "20270331" {
+		t.Errorf("expected 20270331, got %s", end)
+	}
+
+	// Case 2: In February 2027 (Month < April), FY end should be 20270331
+	t2 := time.Date(2027, time.February, 15, 0, 0, 0, 0, time.UTC)
+	if end := tally.CurrentFinancialYearEnd(t2); end != "20270331" {
+		t.Errorf("expected 20270331, got %s", end)
+	}
+
+	// Case 3: In April 2026 (Start of FY), FY end should be 20270331
+	t3 := time.Date(2026, time.April, 1, 0, 0, 0, 0, time.UTC)
+	if end := tally.CurrentFinancialYearEnd(t3); end != "20270331" {
+		t.Errorf("expected 20270331, got %s", end)
+	}
+}
+
+func TestFilterVouchersWithLedgerSplit(t *testing.T) {
+	mockXML := `<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA>
+		<TALLYMESSAGE><VOUCHER>
+			<VOUCHERTYPENAME>Payment</VOUCHERTYPENAME>
+			<VOUCHERNUMBER>PV-201</VOUCHERNUMBER>
+			<PARTYLEDGERNAME>HDFC Bank</PARTYLEDGERNAME>
+			<AMOUNT>-25000.00</AMOUNT>
+			<DATE>20261101</DATE>
+			<ALLLEDGERENTRIES.LIST>
+				<LEDGERNAME>HDFC Bank</LEDGERNAME>
+				<AMOUNT>-25000.00</AMOUNT>
+			</ALLLEDGERENTRIES.LIST>
+			<ALLLEDGERENTRIES.LIST>
+				<LEDGERNAME>SUSPANCE A/C.</LEDGERNAME>
+				<AMOUNT>25000.00</AMOUNT>
+			</ALLLEDGERENTRIES.LIST>
+		</VOUCHER></TALLYMESSAGE>
+		<TALLYMESSAGE><VOUCHER>
+			<VOUCHERTYPENAME>Payment</VOUCHERTYPENAME>
+			<VOUCHERNUMBER>PV-202</VOUCHERNUMBER>
+			<PARTYLEDGERNAME>HDFC Bank</PARTYLEDGERNAME>
+			<AMOUNT>-10000.00</AMOUNT>
+			<DATE>20261102</DATE>
+			<ALLLEDGERENTRIES.LIST>
+				<LEDGERNAME>HDFC Bank</LEDGERNAME>
+				<AMOUNT>-10000.00</AMOUNT>
+			</ALLLEDGERENTRIES.LIST>
+			<ALLLEDGERENTRIES.LIST>
+				<LEDGERNAME>Office Rent</LEDGERNAME>
+				<AMOUNT>10000.00</AMOUNT>
+			</ALLLEDGERENTRIES.LIST>
+		</VOUCHER></TALLYMESSAGE>
+	</DATA></BODY></ENVELOPE>`
+
+	client := tally.NewClient(config.TallyConfig{
+		URL: "http://mock-tally:9000",
+	})
+	client.SetTransport(roundTripFunc(func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/xml;charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader(mockXML)),
+		}
+	}))
+
+	ctx := context.Background()
+
+	res, err := client.FilterVouchersPaginated(ctx, tally.VoucherFilterOptions{
+		Ledger: "SUSPANCE A/C.",
+	})
+	if err != nil {
+		t.Fatalf("FilterVouchersPaginated failed: %v", err)
+	}
+
+	if res.Total != 1 {
+		t.Errorf("expected 1 matching voucher touching 'SUSPANCE A/C.', got %d", res.Total)
+	}
+	if len(res.Vouchers) > 0 && res.Vouchers[0].VoucherNumber != "PV-201" {
+		t.Errorf("expected PV-201, got %s", res.Vouchers[0].VoucherNumber)
 	}
 }

@@ -57,7 +57,7 @@ Chat with your accounting data directly using natural language:
   - Deep Voucher Drilldown with debits/credits, inventory items, batch details, and tax breakdowns (`tally_get_voucher`).
 - 📄 **On-Demand PDF Generation & Delivery**: Ask your AI to export any financial report or voucher invoice straight to PDF (`tally_generate_pdf`). Automatically saved locally and downloadable via HTTP (`/files/`).
 - ⚡ **Optimized for AI Speed & Safety**: Protects Tally from freezing using a single-query serializer and cooldown buffer. Master records (ledgers, stock items) are cached in memory for sub-millisecond responses.
-- 🎯 **TOON Format (40% - 60% Token Reduction)**: Supports **Token-Oriented Object Notation** (TOON) alongside JSON. By declaring object keys once in a header and streaming tabular records without braces or quotes, TOON cuts LLM prompt token costs by nearly half and doubles the amount of accounting data fitting into context windows. Enable server-wide or per-query.
+- 🎯 **TOON Format by Default (40% - 60% Token Reduction)**: Formats all tool query responses in **Token-Oriented Object Notation** (TOON). By declaring object keys once in a header and streaming tabular records without braces or quotes, TOON cuts LLM prompt token costs by nearly half and doubles the amount of accounting data fitting into context windows.
 - 🔄 **Automatic Self-Updater**: Automatically notifies you when a newer version is released on GitHub. Update seamlessly in-place from the tray menu or CLI (`--update`).
 - 📜 **100% Free & Open Source**: Permissive [MIT License](./LICENSE).
 
@@ -181,6 +181,7 @@ When connected, your AI assistant can automatically call these tools to fulfill 
 | `tally_get_financial_summary` | Provides a quick KPI overview (Cash, Bank, Debtors, Creditors, Revenue, Profit) in < 350 tokens | *"Give me a high-level summary of our financials."* |
 | `tally_list_ledgers` | Searches and lists accounts (customers, vendors, banks, expenses) with balances | *"List all Sundry Debtors located in Maharashtra."* |
 | `tally_get_ledger` | Retrieves complete ledger details (address, credit limits, GST numbers, balance) | *"Show full contact and account info for ABC Corp."* |
+| `tally_get_ledger_statement` | Detailed transaction statement for any ledger (Date, Voucher Type, Voucher No, Contra Account, Debit, Credit, Narration, Running Balance) | *"Show statement for SUSPANCE A/C. from April to October 2026."* |
 | `tally_list_vouchers` | Fast-filtered transaction lookup by party name, gross invoice amount (exact/range/tolerance), date range, voucher type, or free-text query with server-side TDL pushdown | *"Check if Roquette's 30,090 rs invoice is created"* or *"Show all sales vouchers entered in October 2026."* |
 | `tally_get_voucher` | Full transaction drilldown (all debit/credit legs, inventory items, batch numbers, tax breakdown) | *"Give me the full breakdown of Invoice #INV-1042."* |
 | `tally_get_stock_summary` | Checks inventory quantities, units, and stock valuations | *"What is our available stock for 100mm Pipes?"* |
@@ -194,7 +195,26 @@ When connected, your AI assistant can automatically call these tools to fulfill 
 | `tally_create_ledger` | Creates a new account ledger in Tally | *"Create a new Sundry Debtor named Global Logistics."* |
 | `tally_execute_xml` | Runs custom raw XML / TDL queries against Tally | *(For power users and custom TDL scripts)* |
 
-> ⚡ **Targeted Query Acceleration & Safety**: `tally_list_vouchers` supports direct filtering by `party`, `amount` (with optional `amount_tolerance`), `min_amount`, `max_amount`, and `search`. Queries leverage native Tally date and type scoping while multi-attribute searches execute in high-speed Go memory—allowing your AI to verify specific invoices (e.g., *"Is Roquette's ₹30,090 invoice created?"*) in milliseconds with zero risk of Tally formula crashes.
+> ⚡ **Targeted Query Acceleration & Safety**: `tally_list_vouchers` supports direct filtering by `party` (or aliases `customer`, `vendor`, `ledger_name`), `amount` (with optional `amount_tolerance`), `min_amount`, `max_amount`, and `search`. When `from_date` is omitted, queries safely default to the start of the current Indian financial year (April 1) to prevent latency spikes on enterprise databases with decades of history.
+
+### MCP Prompts & Guided Workflows
+
+Tally MCP provides built-in MCP Prompts that inject domain expertise and structured workflows into your AI assistant:
+
+| Prompt Name | Description |
+|---|---|
+| `tally_accounting_rules` | Teaches the AI essential Indian GAAP & Tally terminology (Sundry Debtors = Customers, Sundry Creditors = Vendors, Contra, FY April–March) and how to interpret TOON tabular formats. |
+| `financial_health_audit` | A structured 5-step executive audit workflow analyzing liquidity (Cash/Bank), credit risks (overdue receivables), liability obligations (payables), and profit margins. |
+
+### MCP Resources (Direct Context Without Tool Calls)
+
+AI clients (such as Claude Desktop or Cursor) can attach real-time Tally context directly using MCP Resources:
+
+| URI | Resource Name | What It Provides |
+|---|---|---|
+| `tally://status` | Tally Status | Live connectivity status, loaded company count, queue metrics, and executable detection. |
+| `tally://companies` | Loaded Companies | List of all companies currently open and active in Tally. |
+| `tally://financial-summary` | Financial Summary | Executive KPI snapshot (< 350 tokens) containing Cash, Bank, Receivables, Payables, and Profit in TOON format. |
 
 ---
 
@@ -207,8 +227,8 @@ server:
   # Network address to listen on ("0.0.0.0:8080" allows connections across your LAN)
   listen_address: "0.0.0.0:8080"
   transport: "sse"
-  # Default serialization format: "compact_json" (default) or "toon" (Token-Oriented Object Notation)
-  payload_format: "compact_json"
+  # Response serialization format for tool queries: "toon" (Token-Oriented Object Notation, default)
+  payload_format: "toon"
 
 tally:
   # Address where Tally is running (default port is 9000)

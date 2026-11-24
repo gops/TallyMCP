@@ -13,9 +13,9 @@ server:
   transport: "sse"
 
   # Default payload serialization format for MCP tool responses:
-  # - "compact_json": Standard JSON stripped of unnecessary whitespace (default)
-  # - "toon": Token-Oriented Object Notation (reduces token consumption by 40% to 60%)
-  payload_format: "compact_json"
+  # - "toon": Token-Oriented Object Notation (reduces token consumption by 40% to 60%, default)
+  # - "compact_json": Standard JSON stripped of unnecessary whitespace
+  payload_format: "toon"
 
 tally:
   # HTTP address where Tally ERP 9 or TallyPrime is running.

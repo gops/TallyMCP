@@ -25,7 +25,7 @@ type ServerConfig struct {
 	ListenAddress string `yaml:"listen_address"`
 	// Transport can be "sse" (default, over HTTP for local network) or "stdio" (stdin/stdout).
 	Transport string `yaml:"transport"`
-	// PayloadFormat sets the default serialization format for tool responses ("compact_json" (default), "json", or "toon").
+	// PayloadFormat sets the serialization format for tool responses ("toon" by default).
 	PayloadFormat string `yaml:"payload_format"`
 }
 
@@ -78,7 +78,7 @@ func DefaultConfig() *Config {
 		Server: ServerConfig{
 			ListenAddress: "0.0.0.0:8080",
 			Transport:     "sse",
-			PayloadFormat: "compact_json",
+			PayloadFormat: "toon",
 		},
 		Tally: TallyConfig{
 			URL:             "http://localhost:9000",
@@ -206,8 +206,8 @@ server:
   listen_address: "0.0.0.0:8080"
   # Transport mode: "sse" (HTTP mode exposing /mcp and /sse for LAN) or "stdio" (Standard I/O)
   transport: "sse"
-  # Default serialization format for tool responses: "compact_json" (default) or "toon" (Token-Oriented Object Notation)
-  payload_format: "compact_json"
+  # Default serialization format for tool responses: "toon" (Token-Oriented Object Notation)
+  payload_format: "toon"
 
 tally:
   # HTTP address of Tally ERP 9 or TallyPrime

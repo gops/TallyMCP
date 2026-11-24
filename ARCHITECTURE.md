@@ -91,6 +91,10 @@ The bridge communicates with AI clients over the standard **Model Context Protoc
 4. **File Delivery Service (`/files/`)**:
    - Serves generated PDF invoices and statements from the operating system's temporary directory.
    - Restricts file access to authorized clients and uses sanitized file path validation to prevent path traversal attacks.
+5. **MCP Prompts, Resources & Query Protection**:
+   - **Prompts (`prompts/list`, `prompts/get`)**: Registers domain prompts (`tally_accounting_rules`, `financial_health_audit`) teaching connected LLMs Indian GAAP accounting conventions (Sundry Debtors/Creditors, Contra, FY) and the TOON schema syntax.
+   - **Resources (`resources/list`, `resources/read`)**: Exposes direct-read URIs (`tally://status`, `tally://companies`, `tally://financial-summary`) allowing agents to attach live Tally state without consuming tool call round-trips.
+   - **Safe Date Scoping**: Unbounded voucher queries automatically default `from_date` to the start of the current financial year (`YYYY0401`), guarding against multi-year table scan timeouts on historical databases.
 
 ---
 
@@ -169,7 +173,7 @@ Tally MCP employs a multi-tiered token optimization strategy:
 | **Crash-Proof StaticVariable Scoping** | Uses Tally's native `<STATICVARIABLES>` (`<SVFROMDATE>`, `<SVTODATE>`, `<VOUCHERTYPENAME>`) to scope vouchers without dynamic TDL `<FILTER>` expressions. | Completely avoids brittle TDL formula compilation errors and fatal "Bad formula" crashes in Tally ERP / TallyPrime. |
 | **Lightweight Voucher Projections** | List queries fetch only header fields (`Date`, `VoucherNumber`, `PartyLedgerName`, `Amount`, `Narration`, `MasterId`), omitting nested sub-collections (`AllLedgerEntries.List.*`). Full transaction drilldowns are deferred to `tally_get_voucher`. | Reduces XML parsing and serialization overhead by 80–90% on voucher collections. |
 | **In-Memory Multi-Attribute Filtering** | Substring party matching, amount ranges with floating-point tolerance (`math.Abs`), and full-text search across reference/narration run strictly in Go memory. | Delivers microsecond query speeds, handles special characters (`&`, `"`, `'`, `#`, `/`) safely, and eliminates any risk of crashing Tally. |
-| **TOON (Token-Oriented Object Notation)** | `internal/toon/toon.go` serializes uniform tabular arrays with single header schemas (`ledgers[50]{name,parent,balance}:`) and raw rows, stripping repeated keys, braces, and quotes. Enabled server-wide (`payload_format: "toon"`) or per tool call (`format: "toon"`). | **Cuts token consumption by 40% to 60%** on collections, allowing 2x more vouchers and ledgers in LLM prompts. |
+| **TOON (Token-Oriented Object Notation)** | `internal/toon/toon.go` serializes uniform tabular arrays with single header schemas (`ledgers[50]{name,parent,balance}:`) and raw rows, stripping repeated keys, braces, and quotes. Enabled server-wide as the standard format for all query responses (`payload_format: "toon"`). | **Cuts token consumption by 40% to 60%** on collections, allowing 2x more vouchers and ledgers in LLM prompts. |
 
 ---
 
@@ -478,6 +482,7 @@ The MCP server registers the following tools in `internal/mcp/server.go`:
 | `tally_get_financial_summary` | `HandleGetFinancialSummary` | High-level KPI snapshot (Cash, Receivables, Payables, Revenue, Net Profit). |
 | `tally_list_ledgers` | `HandleListLedgers` | Searchable, paginated ledger list with compact mode option. |
 | `tally_get_ledger` | `HandleGetLedger` | Full ledger contact, credit, and balance details. |
+| `tally_get_ledger_statement` | `HandleGetLedgerStatement` | Detailed transaction statement for any ledger (Date, Voucher Type, No, Contra, Debit, Credit, Narration, Running Balance). |
 | `tally_list_vouchers` | `HandleListVouchers` | Accelerated voucher lookup with server-side TDL pushdown (party, amount, tolerance, search, date range, voucher type). |
 | `tally_get_voucher` | `HandleGetVoucher` | Deep drilldown: ledger legs, inventory quantities, bill allocations, taxes. |
 | `tally_get_stock_summary` | `HandleGetStockSummary` | Paginated stock inventory levels, rates, and valuations. |
