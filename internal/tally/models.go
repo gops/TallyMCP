@@ -240,8 +240,9 @@ type VoucherItem struct {
 	PartyLedgerName string              `xml:"PARTYLEDGERNAME,omitempty" json:"party_ledger_name,omitempty"`
 	Amount          float64             `xml:"AMOUNT,omitempty" json:"amount,omitempty"`
 	Narration       string              `xml:"NARRATION,omitempty" json:"narration,omitempty"`
-	EntriesSummary  string              `xml:"-" json:"entries_summary,omitempty"`
-	LedgerEntries   []LedgerEntryRecord `xml:"ALLLEDGERENTRIES.LIST" json:"ledger_entries,omitempty"`
+	EntriesSummary   string                  `xml:"-" json:"entries_summary,omitempty"`
+	LedgerEntries    []LedgerEntryRecord     `xml:"ALLLEDGERENTRIES.LIST" json:"ledger_entries,omitempty"`
+	InventoryEntries []VoucherInventoryEntry `xml:"ALLINVENTORYENTRIES.LIST" json:"inventory_entries,omitempty"`
 }
 
 // VoucherSummaryGroup holds aggregated counts and totals for one bucket (type, party, or month).
@@ -278,9 +279,10 @@ type PaginatedVouchers struct {
 
 // LedgerEntryRecord represents a line entry in a voucher.
 type LedgerEntryRecord struct {
-	LedgerName       string  `xml:"LEDGERNAME" json:"ledger_name"`
-	Amount           float64 `xml:"AMOUNT" json:"amount"`
-	IsDeemedPositive string  `xml:"ISDEEMEDPOSITIVE,omitempty" json:"-"`
+	LedgerName       string           `xml:"LEDGERNAME" json:"ledger_name"`
+	Amount           float64          `xml:"AMOUNT" json:"amount"`
+	IsDeemedPositive string           `xml:"ISDEEMEDPOSITIVE,omitempty" json:"-"`
+	BankAllocations  []BankAllocation `xml:"BANKALLOCATIONS.LIST" json:"bank_allocations,omitempty"`
 }
 
 // LedgerStatementEntry represents a single transaction entry in a ledger statement.
@@ -401,6 +403,7 @@ type BankAllocation struct {
 	TransactionType  string  `xml:"TRANSACTIONTYPE,omitempty" json:"transaction_type,omitempty"`
 	InstrumentNumber string  `xml:"INSTRUMENTNUMBER,omitempty" json:"instrument_number,omitempty"`
 	InstrumentDate   string  `xml:"INSTRUMENTDATE,omitempty" json:"instrument_date,omitempty"`
+	BankersDate      string  `xml:"BANKERSDATE,omitempty" json:"bankers_date,omitempty"`
 	Amount           float64 `xml:"AMOUNT,omitempty" json:"amount,omitempty"`
 }
 
@@ -442,4 +445,114 @@ type ServerStatus struct {
 	QueueLength    int           `json:"queue_length"`
 	QueueCapacity  int           `json:"queue_capacity"`
 	Error          string        `json:"error,omitempty"`
+}
+
+// VoucherEntryInput represents one ledger leg when creating/previewing a voucher.
+type VoucherEntryInput struct {
+	LedgerName       string  `json:"ledger_name"`
+	ResolvedFrom     string  `json:"resolved_from,omitempty"`
+	Amount           float64 `json:"amount"` // Tally sign: negative=Debit, positive=Credit
+	IsDebit          bool    `json:"is_debit"`
+	IsDeemedPositive string  `json:"-"`
+}
+
+// CreateVoucherResult represents the preview or creation result of tally_create_voucher.
+type CreateVoucherResult struct {
+	Status        string              `json:"status"` // "preview" or "created"
+	Valid         bool                `json:"valid"`
+	Company       string              `json:"company,omitempty"`
+	VoucherType   string              `json:"voucher_type"`
+	Date          string              `json:"date"`
+	VoucherNumber string              `json:"voucher_number,omitempty"`
+	Reference     string              `json:"reference,omitempty"`
+	PartyLedger   string              `json:"party_ledger,omitempty"`
+	Narration     string              `json:"narration,omitempty"`
+	TotalDebit    float64             `json:"total_debit"`
+	TotalCredit   float64             `json:"total_credit"`
+	Entries       []VoucherEntryInput `json:"entries"`
+	Hint          string              `json:"hint,omitempty"`
+}
+
+// GSTComponentTotals holds CGST/SGST/IGST/Cess amounts.
+type GSTComponentTotals struct {
+	CGST  float64 `json:"cgst"`
+	SGST  float64 `json:"sgst"`
+	IGST  float64 `json:"igst"`
+	Cess  float64 `json:"cess,omitempty"`
+	Total float64 `json:"total"`
+}
+
+// GSTSummary provides a single-call GST compliance and tax liability snapshot.
+type GSTSummary struct {
+	Company              string             `json:"company,omitempty"`
+	FromDate             string             `json:"from_date"`
+	ToDate               string             `json:"to_date"`
+	SalesVouchers        int                `json:"sales_vouchers"`
+	PurchaseVouchers     int                `json:"purchase_vouchers"`
+	TotalSalesValue      float64            `json:"total_sales_value"`
+	TotalPurchaseValue   float64            `json:"total_purchase_value"`
+	OutputTax            GSTComponentTotals `json:"output_tax"`
+	InputTaxCredit       GSTComponentTotals `json:"input_tax_credit"`
+	NetGSTPayable        GSTComponentTotals `json:"net_gst_payable"`
+	MissingGSTINParties  []string           `json:"missing_gstin_parties,omitempty"`
+	MissingGSTINVouchers int                `json:"missing_gstin_vouchers,omitempty"`
+}
+
+// BankReconEntry represents a single bank transaction with reconciliation status.
+type BankReconEntry struct {
+	Date             string  `json:"date"`
+	VoucherType      string  `json:"voucher_type"`
+	VoucherNumber    string  `json:"voucher_number,omitempty"`
+	Particulars      string  `json:"particulars,omitempty"`
+	TransactionType  string  `json:"transaction_type,omitempty"`
+	InstrumentNumber string  `json:"instrument_number,omitempty"`
+	InstrumentDate   string  `json:"instrument_date,omitempty"`
+	BankersDate      string  `json:"bankers_date,omitempty"`
+	Reconciled       bool    `json:"reconciled"`
+	Debit            float64 `json:"debit,omitempty"`
+	Credit           float64 `json:"credit,omitempty"`
+}
+
+// BankReconResult summarizes bank reconciliation status for a bank ledger.
+type BankReconResult struct {
+	Company            string           `json:"company,omitempty"`
+	BankLedger         string           `json:"bank_ledger"`
+	AvailableBanks     []string         `json:"available_banks,omitempty"`
+	FromDate           string           `json:"from_date"`
+	ToDate             string           `json:"to_date"`
+	BookClosingBalance float64          `json:"book_closing_balance"`
+	BookBalanceType    string           `json:"book_balance_type"`
+	TotalEntries       int              `json:"total_entries"`
+	ReconciledCount    int              `json:"reconciled_count"`
+	UnreconciledCount  int              `json:"unreconciled_count"`
+	UnreconciledDebit  float64          `json:"unreconciled_debit"`
+	UnreconciledCredit float64          `json:"unreconciled_credit"`
+	Entries            []BankReconEntry `json:"entries"`
+}
+
+// AnalyticsPartyRank summarizes sales/purchase volume for a party.
+type AnalyticsPartyRank struct {
+	Party       string  `json:"party"`
+	Count       int     `json:"count"`
+	TotalAmount float64 `json:"total_amount"`
+}
+
+// AnalyticsItemRank summarizes sales/purchase volume for a stock item.
+type AnalyticsItemRank struct {
+	Item        string  `json:"item"`
+	Count       int     `json:"count"`
+	TotalAmount float64 `json:"total_amount"`
+	SampleQty   string  `json:"sample_qty,omitempty"`
+}
+
+// SalesAnalyticsResult provides top parties and top items for Sales or Purchase vouchers.
+type SalesAnalyticsResult struct {
+	Company       string               `json:"company,omitempty"`
+	VoucherType   string               `json:"voucher_type"`
+	FromDate      string               `json:"from_date"`
+	ToDate        string               `json:"to_date"`
+	TotalVouchers int                  `json:"total_vouchers"`
+	TotalAmount   float64              `json:"total_amount"`
+	TopParties    []AnalyticsPartyRank `json:"top_parties"`
+	TopItems      []AnalyticsItemRank  `json:"top_items,omitempty"`
 }

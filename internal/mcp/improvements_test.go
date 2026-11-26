@@ -559,3 +559,126 @@ func TestAgentSpeedFeatures(t *testing.T) {
 		t.Errorf("expected FY dates in tally://context, got:\n%s", ctxText)
 	}
 }
+
+func TestWorkflowTools_VoucherGSTBankReconAnalytics(t *testing.T) {
+	mockXML := `<ENVELOPE><HEADER><VERSION>1</VERSION></HEADER><BODY><DATA><COLLECTION>
+		<LEDGER NAME="Acme Corp"><PARENT>Sundry Debtors</PARENT><CLOSINGBALANCE>-11800.00</CLOSINGBALANCE><PARTYGSTIN></PARTYGSTIN></LEDGER>
+		<LEDGER NAME="Sales Account"><PARENT>Sales Accounts</PARENT><CLOSINGBALANCE>10000.00</CLOSINGBALANCE></LEDGER>
+		<LEDGER NAME="CGST"><PARENT>Duties &amp; Taxes</PARENT><CLOSINGBALANCE>900.00</CLOSINGBALANCE></LEDGER>
+		<LEDGER NAME="SGST"><PARENT>Duties &amp; Taxes</PARENT><CLOSINGBALANCE>900.00</CLOSINGBALANCE></LEDGER>
+		<LEDGER NAME="HDFC Bank"><PARENT>Bank Accounts</PARENT><CLOSINGBALANCE>-50000.00</CLOSINGBALANCE></LEDGER>
+		<VOUCHER VOUCHERNUMBER="S-1" DATE="20261110" VOUCHERTYPENAME="Sales" PARTYLEDGERNAME="Acme Corp" AMOUNT="-11800.00">
+			<ALLLEDGERENTRIES.LIST><LEDGERNAME>Acme Corp</LEDGERNAME><AMOUNT>-11800.00</AMOUNT></ALLLEDGERENTRIES.LIST>
+			<ALLLEDGERENTRIES.LIST><LEDGERNAME>Sales Account</LEDGERNAME><AMOUNT>10000.00</AMOUNT></ALLLEDGERENTRIES.LIST>
+			<ALLLEDGERENTRIES.LIST><LEDGERNAME>CGST</LEDGERNAME><AMOUNT>900.00</AMOUNT></ALLLEDGERENTRIES.LIST>
+			<ALLLEDGERENTRIES.LIST><LEDGERNAME>SGST</LEDGERNAME><AMOUNT>900.00</AMOUNT></ALLLEDGERENTRIES.LIST>
+			<ALLINVENTORYENTRIES.LIST><STOCKITEMNAME>Widget Pro</STOCKITEMNAME><BILLEDQTY>10 Nos</BILLEDQTY><AMOUNT>10000.00</AMOUNT></ALLINVENTORYENTRIES.LIST>
+		</VOUCHER>
+		<VOUCHER VOUCHERNUMBER="R-1" DATE="20261112" VOUCHERTYPENAME="Receipt" PARTYLEDGERNAME="Acme Corp" AMOUNT="-5000.00">
+			<ALLLEDGERENTRIES.LIST>
+				<LEDGERNAME>HDFC Bank</LEDGERNAME>
+				<AMOUNT>-5000.00</AMOUNT>
+				<BANKALLOCATIONS.LIST><TRANSACTIONTYPE>NEFT</TRANSACTIONTYPE><INSTRUMENTNUMBER>UTR99</INSTRUMENTNUMBER></BANKALLOCATIONS.LIST>
+			</ALLLEDGERENTRIES.LIST>
+			<ALLLEDGERENTRIES.LIST><LEDGERNAME>Acme Corp</LEDGERNAME><AMOUNT>5000.00</AMOUNT></ALLLEDGERENTRIES.LIST>
+		</VOUCHER>
+	</COLLECTION></DATA></BODY></ENVELOPE>`
+
+	tallyClient := tally.NewClient(config.TallyConfig{URL: "http://mock-tally:9000", CacheTTLSeconds: 30})
+	tallyClient.SetTransport(mockRoundTripper(func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(mockXML)),
+			Header:     make(http.Header),
+		}
+	}))
+
+	handlers := mcppkg.NewToolHandlers(tallyClient, "v1.0.21", "gops/TallyMCP", "json")
+	ctx := context.Background()
+
+	// 1. tally_create_voucher preview=true (default) validates & resolves ledgers without posting
+	vRes, err := handlers.HandleCreateVoucher(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name: "tally_create_voucher",
+			Arguments: map[string]any{
+				"voucher_type": "Sales",
+				"date":         "2026-11-25",
+				"entries": []map[string]any{
+					{"ledger_name": "Acme Corp", "amount": 11800, "is_debit": true},
+					{"ledger_name": "Sales Account", "amount": 10000, "is_debit": false},
+					{"ledger_name": "CGST", "amount": 900, "is_debit": false},
+					{"ledger_name": "SGST", "amount": 900, "is_debit": false},
+				},
+			},
+		},
+	})
+	if err != nil || vRes.IsError {
+		t.Fatalf("HandleCreateVoucher preview failed: err=%v res=%+v", err, vRes)
+	}
+	vTxt := vRes.Content[0].(mcp.TextContent).Text
+	if !strings.Contains(vTxt, `"status":"preview"`) || !strings.Contains(vTxt, `"valid":true`) {
+		t.Errorf("expected preview=true valid=true response, got: %s", vTxt)
+	}
+
+	// 2. unbalanced voucher must fail
+	badVRes, err := handlers.HandleCreateVoucher(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name: "tally_create_voucher",
+			Arguments: map[string]any{
+				"voucher_type": "Journal",
+				"entries": []map[string]any{
+					{"ledger_name": "Acme Corp", "amount": 1000, "is_debit": true},
+					{"ledger_name": "Sales Account", "amount": 900, "is_debit": false},
+				},
+			},
+		},
+	})
+	if err != nil || !badVRes.IsError || !strings.Contains(badVRes.Content[0].(mcp.TextContent).Text, "unbalanced") {
+		t.Errorf("expected unbalanced error, got err=%v res=%+v", err, badVRes)
+	}
+
+	// 3. tally_get_gst_summary
+	gstRes, err := handlers.HandleGetGSTSummary(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "tally_get_gst_summary",
+			Arguments: map[string]any{"from_date": "20261101", "to_date": "20261130"},
+		},
+	})
+	if err != nil || gstRes.IsError {
+		t.Fatalf("HandleGetGSTSummary failed: err=%v res=%+v", err, gstRes)
+	}
+	gstTxt := gstRes.Content[0].(mcp.TextContent).Text
+	if !strings.Contains(gstTxt, `"cgst":900`) || !strings.Contains(gstTxt, `"Acme Corp"`) {
+		t.Errorf("expected cgst:900 and missing GSTIN for Acme Corp, got: %s", gstTxt)
+	}
+
+	// 4. tally_get_bank_recon
+	bankRes, err := handlers.HandleGetBankRecon(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "tally_get_bank_recon",
+			Arguments: map[string]any{"from_date": "20261101", "to_date": "20261130"},
+		},
+	})
+	if err != nil || bankRes.IsError {
+		t.Fatalf("HandleGetBankRecon failed: err=%v res=%+v", err, bankRes)
+	}
+	bankTxt := bankRes.Content[0].(mcp.TextContent).Text
+	if !strings.Contains(bankTxt, `"bank_ledger":"HDFC Bank"`) || !strings.Contains(bankTxt, `"unreconciled_count":1`) {
+		t.Errorf("expected HDFC Bank with 1 unreconciled entry, got: %s", bankTxt)
+	}
+
+	// 5. tally_get_sales_analytics
+	anaRes, err := handlers.HandleGetSalesAnalytics(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "tally_get_sales_analytics",
+			Arguments: map[string]any{"voucher_type": "Sales", "from_date": "20261101", "to_date": "20261130"},
+		},
+	})
+	if err != nil || anaRes.IsError {
+		t.Fatalf("HandleGetSalesAnalytics failed: err=%v res=%+v", err, anaRes)
+	}
+	anaTxt := anaRes.Content[0].(mcp.TextContent).Text
+	if !strings.Contains(anaTxt, `"Widget Pro"`) || !strings.Contains(anaTxt, `"Acme Corp"`) {
+		t.Errorf("expected Acme Corp and Widget Pro in sales analytics, got: %s", anaTxt)
+	}
+}

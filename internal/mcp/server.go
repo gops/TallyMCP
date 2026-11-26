@@ -357,7 +357,71 @@ func (s *Server) registerTools() {
 			),
 			s.handlers.HandleCreateLedger,
 		)
+
+		// 15b. tally_create_voucher (safe preview-by-default voucher creation)
+		s.mcpServer.AddTool(
+			mcp.NewTool("tally_create_voucher",
+				mcp.WithDescription("Create or dry-run preview a Tally voucher (Sales, Purchase, Payment, Receipt, Journal, Contra). Defaults to preview=true; set preview=false to post."),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(false),
+				mcp.WithString("company", mcp.Description("Target company")),
+				mcp.WithString("voucher_type", mcp.Required(), mcp.Description("Voucher type (Sales, Purchase, Payment, Receipt, Journal, Contra, Credit Note, Debit Note)")),
+				mcp.WithString("date", mcp.Description("Voucher date (YYYYMMDD, YYYY-MM-DD, or 'today', default today)")),
+				mcp.WithString("party_ledger", mcp.Description("Optional party ledger name (fuzzy matched)")),
+				mcp.WithString("voucher_number", mcp.Description("Optional voucher number")),
+				mcp.WithString("reference", mcp.Description("Optional reference / supplier invoice number")),
+				mcp.WithString("narration", mcp.Description("Optional narration")),
+				mcp.WithArray("entries", mcp.Required(), mcp.Description("Array of {ledger_name, amount, is_debit} objects (must balance: total debit == total credit)")),
+				mcp.WithBoolean("preview", mcp.Description("Dry-run validate & resolve ledgers without posting (default true; pass false to post)")),
+			),
+			s.handlers.HandleCreateVoucher,
+		)
 	}
+
+	// 16. tally_get_gst_summary
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_gst_summary",
+			mcp.WithDescription("1-call GST compliance summary: Output Tax vs Input Tax Credit (CGST/SGST/IGST/Cess), Net Payable, and missing GSTIN flags."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("from_date", mcp.Description("Start date or keyword (default this_month)")),
+			mcp.WithString("to_date", mcp.Description("End date or keyword (default today)")),
+		),
+		s.handlers.HandleGetGSTSummary,
+	)
+
+	// 17. tally_get_bank_recon
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_bank_recon",
+			mcp.WithDescription("Bank reconciliation summary: book balance, reconciled vs unreconciled counts/totals, and pending bank entries."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("bank_ledger", mcp.Description("Bank ledger name (optional; defaults to first Bank account)")),
+			mcp.WithString("from_date", mcp.Description("Start date or keyword (default this_fy)")),
+			mcp.WithString("to_date", mcp.Description("End date or keyword")),
+			mcp.WithBoolean("unreconciled_only", mcp.Description("Return only unreconciled entries (default true)")),
+			mcp.WithNumber("limit", mcp.Description("Max entries to return (default 50, max 250)")),
+		),
+		s.handlers.HandleGetBankRecon,
+	)
+
+	// 18. tally_get_sales_analytics
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_sales_analytics",
+			mcp.WithDescription("1-call Sales/Purchase analytics: total value, top N parties, and top N stock items."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("voucher_type", mcp.Description("Voucher type: Sales (default) or Purchase")),
+			mcp.WithString("from_date", mcp.Description("Start date or keyword (default this_fy)")),
+			mcp.WithString("to_date", mcp.Description("End date or keyword")),
+			mcp.WithNumber("top_n", mcp.Description("Top parties and items count (default 10, max 50)")),
+		),
+		s.handlers.HandleGetSalesAnalytics,
+	)
 
 	if s.cfg.Updater.ExposeMCPTools {
 		s.mcpServer.AddTool(

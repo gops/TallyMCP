@@ -492,6 +492,10 @@ The MCP server registers the following tools in `internal/mcp/server.go`:
 | `tally_generate_pdf` | `HandleGeneratePDF` | PDF report and invoice generation. |
 | `tally_execute_xml` | `HandleExecuteXML` | Raw TDL / XML query execution escape hatch. |
 | `tally_create_ledger` | `HandleCreateLedger` | Master ledger creation (auto-invalidates cache). |
+| `tally_create_voucher` | `HandleCreateVoucher` | Structured voucher creation with `preview=true` dry-run validation. |
+| `tally_get_gst_summary` | `HandleGetGSTSummary` | 1-call GST Output vs Input Credit, Net Payable, and missing GSTIN flags. |
+| `tally_get_bank_recon` | `HandleGetBankRecon` | Bank reconciliation summary with reconciled vs unreconciled entries. |
+| `tally_get_sales_analytics` | `HandleGetSalesAnalytics` | Top parties and top stock items for Sales or Purchase vouchers. |
 | `system_check_update` | `HandleCheckUpdate` | Query GitHub for new releases. |
 | `system_apply_update` | `HandleApplyUpdate` | Trigger in-place binary self-update. |
 

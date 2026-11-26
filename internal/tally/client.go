@@ -883,10 +883,12 @@ func (c *Client) FilterStockItemsForCompany(ctx context.Context, company, group,
 }
 
 type rawLedgerEntryXML struct {
-	LedgerName     string  `xml:"LEDGERNAME"`
-	LedgerNameAttr string  `xml:"LEDGERNAME,attr"`
-	Amount         float64 `xml:"AMOUNT"`
-	AmountAttr     float64 `xml:"AMOUNT,attr"`
+	LedgerName         string           `xml:"LEDGERNAME"`
+	LedgerNameAttr     string           `xml:"LEDGERNAME,attr"`
+	Amount             float64          `xml:"AMOUNT"`
+	AmountAttr         float64          `xml:"AMOUNT,attr"`
+	BankAllocations    []BankAllocation `xml:"BANKALLOCATIONS.LIST"`
+	BankAllocationsAlt []BankAllocation `xml:"BANKALLOCATIONS"`
 }
 
 func (r rawLedgerEntryXML) toLedgerEntryRecord() LedgerEntryRecord {
@@ -898,9 +900,14 @@ func (r rawLedgerEntryXML) toLedgerEntryRecord() LedgerEntryRecord {
 	if amt == 0 && r.AmountAttr != 0 {
 		amt = r.AmountAttr
 	}
+	bankAllocs := r.BankAllocations
+	if len(bankAllocs) == 0 && len(r.BankAllocationsAlt) > 0 {
+		bankAllocs = r.BankAllocationsAlt
+	}
 	return LedgerEntryRecord{
-		LedgerName: strings.TrimSpace(name),
-		Amount:     amt,
+		LedgerName:      strings.TrimSpace(name),
+		Amount:          amt,
+		BankAllocations: bankAllocs,
 	}
 }
 
@@ -923,8 +930,10 @@ type rawVoucherXML struct {
 	AmountAttr          float64             `xml:"AMOUNT,attr"`
 	Narration           string              `xml:"NARRATION"`
 	NarrationAttr       string              `xml:"NARRATION,attr"`
-	AllLedgerEntries    []rawLedgerEntryXML `xml:"ALLLEDGERENTRIES.LIST"`
-	LedgerEntries       []rawLedgerEntryXML `xml:"LEDGERENTRIES.LIST"`
+	AllLedgerEntries     []rawLedgerEntryXML     `xml:"ALLLEDGERENTRIES.LIST"`
+	LedgerEntries        []rawLedgerEntryXML     `xml:"LEDGERENTRIES.LIST"`
+	AllInventoryEntries  []VoucherInventoryEntry `xml:"ALLINVENTORYENTRIES.LIST"`
+	InventoryEntriesList []VoucherInventoryEntry `xml:"INVENTORYENTRIES.LIST"`
 }
 
 func (r rawVoucherXML) toVoucherItem() VoucherItem {
@@ -987,6 +996,11 @@ func (r rawVoucherXML) toVoucherItem() VoucherItem {
 		}
 	}
 	item.LedgerEntries = entries
+	if len(r.AllInventoryEntries) > 0 {
+		item.InventoryEntries = r.AllInventoryEntries
+	} else if len(r.InventoryEntriesList) > 0 {
+		item.InventoryEntries = r.InventoryEntriesList
+	}
 	return item
 }
 

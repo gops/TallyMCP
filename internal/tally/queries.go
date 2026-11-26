@@ -153,7 +153,7 @@ const listVouchersTemplate = `<ENVELOPE>
         <TDLMESSAGE>
           <COLLECTION NAME="VoucherColl" ISMODIFY="No" ISFIXED="No">
             <TYPE>Voucher</TYPE>
-            {{if .IncludeEntries}}<FETCH>Date, VoucherTypeName, VoucherNumber, Reference, PartyLedgerName, Amount, Narration, MasterId, AllLedgerEntries.*</FETCH>{{else}}<FETCH>Date, VoucherTypeName, VoucherNumber, Reference, PartyLedgerName, Amount, Narration, MasterId</FETCH>{{end}}
+            {{if .IncludeEntries}}<FETCH>Date, VoucherTypeName, VoucherNumber, Reference, PartyLedgerName, Amount, Narration, MasterId, AllLedgerEntries.*, AllInventoryEntries.*</FETCH>{{else}}<FETCH>Date, VoucherTypeName, VoucherNumber, Reference, PartyLedgerName, Amount, Narration, MasterId</FETCH>{{end}}
           </COLLECTION>
         </TDLMESSAGE>
       </TDL>
@@ -734,6 +734,82 @@ func BuildCreateLedgerXML(company, name, parent string, openingBalance float64) 
 		"Name":           XMLEscapeAttr(cleanName),
 		"Parent":         XMLEscapeText(cleanParent),
 		"OpeningBalance": openingBalance,
+	})
+}
+
+const createVoucherTemplate = `<ENVELOPE>
+  <HEADER>
+    <TALLYREQUEST>Import Data</TALLYREQUEST>
+  </HEADER>
+  <BODY>
+    <IMPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>Vouchers</REPORTNAME>
+        <STATICVARIABLES>
+          {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
+        </STATICVARIABLES>
+      </REQUESTDESC>
+      <REQUESTDATA>
+        <TALLYMESSAGE xmlns:UDF="TallyUDF">
+          <VOUCHER VCHTYPE="{{.VoucherTypeAttr}}" ACTION="Create" OBJVIEW="Accounting Voucher View">
+            <DATE>{{.Date}}</DATE>
+            <VOUCHERTYPENAME>{{.VoucherType}}</VOUCHERTYPENAME>
+            {{if .VoucherNumber}}<VOUCHERNUMBER>{{.VoucherNumber}}</VOUCHERNUMBER>{{end}}
+            {{if .Reference}}<REFERENCE>{{.Reference}}</REFERENCE>{{end}}
+            {{if .PartyLedger}}<PARTYLEDGERNAME>{{.PartyLedger}}</PARTYLEDGERNAME>{{end}}
+            {{if .Narration}}<NARRATION>{{.Narration}}</NARRATION>{{end}}
+            {{range .Entries}}
+            <ALLLEDGERENTRIES.LIST>
+              <LEDGERNAME>{{.LedgerName}}</LEDGERNAME>
+              <ISDEEMEDPOSITIVE>{{.IsDeemedPositive}}</ISDEEMEDPOSITIVE>
+              <AMOUNT>{{printf "%.2f" .Amount}}</AMOUNT>
+            </ALLLEDGERENTRIES.LIST>
+            {{end}}
+          </VOUCHER>
+        </TALLYMESSAGE>
+      </REQUESTDATA>
+    </IMPORTDATA>
+  </BODY>
+</ENVELOPE>`
+
+// BuildCreateVoucherXML generates the XML import envelope for creating a voucher in Tally.
+func BuildCreateVoucherXML(company, voucherType, date, voucherNumber, reference, partyLedger, narration string, entries []VoucherEntryInput) (string, error) {
+	cleanType := SanitizeTDLString(voucherType)
+	if cleanType == "" {
+		return "", fmt.Errorf("voucher_type cannot be empty")
+	}
+	cleanDate := CleanDate(date)
+	if cleanDate == "" {
+		return "", fmt.Errorf("date cannot be empty")
+	}
+	if len(entries) < 2 {
+		return "", fmt.Errorf("at least 2 ledger entries are required")
+	}
+
+	type xmlEntry struct {
+		LedgerName       string
+		IsDeemedPositive string
+		Amount           float64
+	}
+	escapedEntries := make([]xmlEntry, 0, len(entries))
+	for _, e := range entries {
+		escapedEntries = append(escapedEntries, xmlEntry{
+			LedgerName:       XMLEscapeText(SanitizeTDLString(e.LedgerName)),
+			IsDeemedPositive: e.IsDeemedPositive,
+			Amount:           e.Amount,
+		})
+	}
+
+	return executeTemplate("createVoucher", createVoucherTemplate, map[string]any{
+		"Company":         XMLEscapeText(company),
+		"VoucherTypeAttr": XMLEscapeAttr(cleanType),
+		"VoucherType":     XMLEscapeText(cleanType),
+		"Date":            cleanDate,
+		"VoucherNumber":   XMLEscapeText(SanitizeTDLString(voucherNumber)),
+		"Reference":       XMLEscapeText(SanitizeTDLString(reference)),
+		"PartyLedger":     XMLEscapeText(SanitizeTDLString(partyLedger)),
+		"Narration":       XMLEscapeText(SanitizeTDLString(narration)),
+		"Entries":         escapedEntries,
 	})
 }
 

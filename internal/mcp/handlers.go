@@ -1464,6 +1464,147 @@ func (h *ToolHandlers) HandleCreateLedger(ctx context.Context, req mcp.CallToolR
 	return mcp.NewToolResultText(fmt.Sprintf("Tally Response:\n%s", resp)), nil
 }
 
+// HandleCreateVoucher validates, resolves ledgers, and previews (default) or imports a voucher into Tally.
+func (h *ToolHandlers) HandleCreateVoucher(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	preview := getBoolDefault(req, "preview", true)
+	if !preview && h.isReadOnly(ctx) {
+		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode (posting vouchers with preview=false is disabled)."), nil
+	}
+
+	company, err := h.resolveCompany(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	vType, err := req.RequireString("voucher_type")
+	if err != nil {
+		return mcp.NewToolResultError("Argument 'voucher_type' is required (e.g. Sales, Purchase, Payment, Receipt, Journal)"), nil
+	}
+
+	args := req.GetArguments()
+	rawEntriesVal, ok := args["entries"]
+	if !ok || rawEntriesVal == nil {
+		return mcp.NewToolResultError("Argument 'entries' is required (array of {ledger_name, amount, is_debit})"), nil
+	}
+
+	var entries []tally.VoucherEntryInput
+	switch v := rawEntriesVal.(type) {
+	case string:
+		if uErr := json.Unmarshal([]byte(v), &entries); uErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Invalid JSON in 'entries': %v", uErr)), nil
+		}
+	default:
+		b, mErr := json.Marshal(v)
+		if mErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Invalid 'entries' format: %v", mErr)), nil
+		}
+		if uErr := json.Unmarshal(b, &entries); uErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Invalid 'entries' structure: %v", uErr)), nil
+		}
+	}
+
+	res, err := h.tallyClient.CreateVoucherForCompany(
+		ctx,
+		company,
+		vType,
+		req.GetString("date", ""),
+		req.GetString("voucher_number", ""),
+		req.GetString("reference", ""),
+		req.GetString("party_ledger", ""),
+		req.GetString("narration", ""),
+		entries,
+		preview,
+	)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Voucher %s failed: %v", map[bool]string{true: "preview", false: "creation"}[preview], err)), nil
+	}
+
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
+
+// HandleGetGSTSummary returns a single-call GST compliance and tax liability snapshot.
+func (h *ToolHandlers) HandleGetGSTSummary(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	company, err := h.resolveCompany(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	fromDate := req.GetString("from_date", "")
+	toDate := req.GetString("to_date", "")
+	if fromDate == "" && toDate == "" {
+		fromDate = "this_month"
+	}
+
+	res, err := h.tallyClient.GetGSTSummaryForCompany(ctx, company, fromDate, toDate)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to generate GST summary: %v", err)), nil
+	}
+
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
+
+// HandleGetBankRecon returns reconciled vs unreconciled bank entries for a bank ledger.
+func (h *ToolHandlers) HandleGetBankRecon(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	company, err := h.resolveCompany(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	unreconciledOnly := getBoolDefault(req, "unreconciled_only", true)
+	limit := req.GetInt("limit", 50)
+
+	res, err := h.tallyClient.GetBankReconForCompany(
+		ctx,
+		company,
+		req.GetString("bank_ledger", ""),
+		req.GetString("from_date", ""),
+		req.GetString("to_date", ""),
+		unreconciledOnly,
+		limit,
+	)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to generate bank reconciliation: %v", err)), nil
+	}
+
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
+
+// HandleGetSalesAnalytics returns top parties and top stock items for Sales or Purchase vouchers.
+func (h *ToolHandlers) HandleGetSalesAnalytics(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	company, err := h.resolveCompany(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	topN := req.GetInt("top_n", 10)
+
+	res, err := h.tallyClient.GetSalesAnalyticsForCompany(
+		ctx,
+		company,
+		req.GetString("voucher_type", "Sales"),
+		req.GetString("from_date", ""),
+		req.GetString("to_date", ""),
+		topN,
+	)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to generate sales analytics: %v", err)), nil
+	}
+
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
+
 // HandleCheckUpdate queries GitHub Releases for updates.
 func (h *ToolHandlers) HandleCheckUpdate(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	info, err := updater.CheckForUpdate(ctx, h.appVersion, h.githubRepo)
