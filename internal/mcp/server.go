@@ -330,21 +330,7 @@ func (s *Server) registerTools() {
 		s.handlers.HandleGeneratePDF,
 	)
 
-	// 14. tally_execute_xml (hidden when expose_expert_tools is false)
-	if s.cfg.Server.ExposeExpertTools {
-		s.mcpServer.AddTool(
-			mcp.NewTool("tally_execute_xml",
-				mcp.WithDescription("Execute raw XML/TDL query against Tally (pre-flight guarded)."),
-				mcp.WithReadOnlyHintAnnotation(false),
-				mcp.WithDestructiveHintAnnotation(true),
-				mcp.WithIdempotentHintAnnotation(false),
-				mcp.WithString("xml_content", mcp.Description("XML request envelope"), mcp.Required()),
-			),
-			s.handlers.HandleExecuteXML,
-		)
-	}
-
-	// 15. tally_create_ledger (omitted in read_only mode to save schema tokens and prevent failed calls)
+	// 14. tally_create_ledger (omitted in read_only mode to save schema tokens and prevent failed calls)
 	if !s.cfg.Server.ReadOnly {
 		s.mcpServer.AddTool(
 			mcp.NewTool("tally_create_ledger",
@@ -811,9 +797,12 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
 	select {
 	case <-ctx.Done():
 		log.Println("[INFO] Shutting down MCP server...")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		return httpServer.Shutdown(shutdownCtx)
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			_ = httpServer.Close()
+		}
+		return nil
 	case err := <-serverErr:
 		return err
 	}

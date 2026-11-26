@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -54,7 +55,7 @@ func main() {
 	autoStartTallyFlag := flag.Bool("auto-start-tally", false, "Automatically start Tally ERP/Prime if not running")
 	tallyPathFlag := flag.String("tally-path", "", "Path to tally.exe executable (e.g. C:\\Program Files\\TallyPrime\\tally.exe)")
 	startTallyFlag := flag.Bool("start-tally", false, "Start Tally immediately if not running and exit")
-	readOnlyFlag := flag.Bool("read-only", false, "Disable mutating MCP operations (tally_create_ledger and mutating tally_execute_xml)")
+	readOnlyFlag := flag.Bool("read-only", false, "Disable mutating MCP operations (tally_create_ledger, tally_create_voucher, etc.)")
 	login1ERPFlag := flag.Bool("1erp-login", false, "Log in to 1erp.work via browser (or with --1erp-token) to enable cloud relay")
 	token1ERPFlag := flag.String("1erp-token", "", "Authenticate to 1erp.work using a device/API token (headless mode)")
 	logout1ERPFlag := flag.Bool("1erp-logout", false, "Log out from 1erp.work and remove saved relay credentials")
@@ -335,31 +336,7 @@ func main() {
 		printBanner(cfg, configPath, activePort, portChanged, originalPort)
 	}
 
-	// Step 4: Check for updates on startup if enabled
-	if cfg.Updater.CheckOnStartup && cfg.Updater.GitHubRepo != "owner/tally-mcp" {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			info, err := updater.CheckForUpdate(ctx, Version, cfg.Updater.GitHubRepo)
-			if err == nil && info != nil && info.HasUpdate {
-				if cfg.Updater.AutoApply {
-					log.Printf("[INFO] AutoApply is enabled. Upgrading to %s...", info.LatestVersion)
-					if err := updater.ApplyUpdate(ctx, info, nil); err != nil {
-						log.Printf("[WARN] Auto-update failed: %v", err)
-					} else {
-						log.Printf("[INFO] Successfully updated to %s. Please restart the server.", info.LatestVersion)
-					}
-				} else {
-					log.Println("==================================================================")
-					log.Printf("🎉 A NEW VERSION IS AVAILABLE: %s (current: %s)", info.LatestVersion, Version)
-					log.Printf("   Run '%s --update' to apply the update.", filepath.Base(os.Args[0]))
-					log.Println("==================================================================")
-				}
-			}
-		}()
-	}
-
-	// Step 5: Initialize Tally Client
+	// Step 4: Initialize Tally Client (auto-update loop starts once context & server are wired)
 	tallyClient := tally.NewClient(cfg.Tally)
 
 	// Quick check of Tally connection
@@ -399,6 +376,33 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	var restartRequested atomic.Bool
+
+	// Step 7a: Background auto-updater (checks every 5 minutes by default, auto-downloads, installs & restarts)
+	autoUpdater := updater.NewAutoUpdater(updater.AutoConfig{
+		CurrentVersion: Version,
+		Repo:           cfg.Updater.GitHubRepo,
+		CheckOnStartup: cfg.Updater.CheckOnStartup,
+		Interval:       time.Duration(cfg.Updater.CheckIntervalSeconds) * time.Second,
+		AutoApply:      cfg.Updater.AutoApply,
+		OnAvailableFn: func(info *updater.UpdateInfo) {
+			log.Println("==================================================================")
+			log.Printf("🎉 A NEW VERSION IS AVAILABLE: %s (current: %s)", info.LatestVersion, Version)
+			log.Printf("   Run '%s --update' to apply the update.", filepath.Base(os.Args[0]))
+			log.Println("==================================================================")
+		},
+		OnRestartFn: func(info *updater.UpdateInfo) error {
+			restartRequested.Store(true)
+			if err := updater.PrepareRestart(cfg.Server.Transport == "stdio"); err != nil {
+				restartRequested.Store(false)
+				return err
+			}
+			cancel()
+			return nil
+		},
+	})
+	go autoUpdater.Run(ctx)
+
 	// Step 7b: Start 1erp.work outbound relay if enabled (only connects when logged in)
 	if cfg.Relay.Enabled {
 		allowRelayWrites := cfg.Relay.AllowWrites && !cfg.Server.ReadOnly
@@ -410,8 +414,10 @@ func main() {
 		}()
 	}
 
+	serverDone := make(chan struct{})
 	serverErrChan := make(chan error, 1)
 	go func() {
+		defer close(serverDone)
 		if listener != nil {
 			if err := srv.RunSSEWithListener(ctx, listener); err != nil {
 				serverErrChan <- err
@@ -429,7 +435,16 @@ func main() {
 		case err := <-serverErrChan:
 			log.Fatalf("[FATAL] Server terminated with error: %v", err)
 		case <-ctx.Done():
+			select {
+			case <-serverDone:
+			case <-time.After(3 * time.Second):
+			}
 			log.Println("[INFO] Server exited cleanly.")
+		}
+		if restartRequested.Load() {
+			if err := updater.CompleteRestart(); err != nil {
+				log.Fatalf("[FATAL] Auto-restart failed: %v", err)
+			}
 		}
 		return
 	}
@@ -489,6 +504,15 @@ func main() {
 			}
 			return updater.ApplyUpdate(c, info, progressFn)
 		},
+		OnRestart: func() error {
+			restartRequested.Store(true)
+			if err := updater.PrepareRestart(false); err != nil {
+				restartRequested.Store(false)
+				return err
+			}
+			cancel()
+			return nil
+		},
 		OnQuit: func() {
 			cancel()
 		},
@@ -502,9 +526,15 @@ func main() {
 	select {
 	case err := <-serverErrChan:
 		log.Fatalf("[FATAL] Server terminated with error: %v", err)
-	case <-time.After(1 * time.Second):
+	case <-serverDone:
+	case <-time.After(3 * time.Second):
 	}
 	log.Println("[INFO] Server exited cleanly.")
+	if restartRequested.Load() {
+		if err := updater.CompleteRestart(); err != nil {
+			log.Fatalf("[FATAL] Auto-restart failed: %v", err)
+		}
+	}
 }
 
 func printBanner(cfg *config.Config, configPath string, activePort int, portChanged bool, originalPort int) {

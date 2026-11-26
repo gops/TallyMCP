@@ -41,10 +41,8 @@ type ServerConfig struct {
 	Transport string `yaml:"transport"`
 	// PayloadFormat sets the serialization format for tool responses ("toon" by default).
 	PayloadFormat string `yaml:"payload_format"`
-	// ReadOnly blocks mutating MCP operations (tally_create_ledger and mutating tally_execute_xml requests).
+	// ReadOnly blocks mutating MCP operations (e.g. tally_create_ledger, tally_create_voucher).
 	ReadOnly bool `yaml:"read_only"`
-	// ExposeExpertTools registers raw/expert tools like tally_execute_xml (default true).
-	ExposeExpertTools bool `yaml:"expose_expert_tools"`
 }
 
 // TallyConfig defines connection details to Tally ERP 9 / TallyPrime.
@@ -87,7 +85,9 @@ type UpdaterConfig struct {
 	GitHubRepo string `yaml:"github_repo"`
 	// CheckOnStartup checks GitHub Releases for newer versions on server start.
 	CheckOnStartup bool `yaml:"check_on_startup"`
-	// AutoApply automatically downloads and applies updates on startup if found.
+	// CheckIntervalSeconds is how often (in seconds) to poll GitHub Releases for updates (default: 300, 0 disables periodic polling).
+	CheckIntervalSeconds int `yaml:"check_interval_seconds"`
+	// AutoApply automatically downloads, installs updates, and restarts the server when a new version is found (default: true).
 	AutoApply bool `yaml:"auto_apply"`
 	// ExposeMCPTools exposes system_check_update and system_apply_update in MCP tools/list (default: false to save schema tokens).
 	ExposeMCPTools bool `yaml:"expose_mcp_tools"`
@@ -102,10 +102,9 @@ type LogConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			ListenAddress:     "0.0.0.0:8080",
-			Transport:         "sse",
-			PayloadFormat:     "toon",
-			ExposeExpertTools: true,
+			ListenAddress: "0.0.0.0:8080",
+			Transport:     "sse",
+			PayloadFormat: "toon",
 		},
 		Tally: TallyConfig{
 			URL:             "http://localhost:9000",
@@ -127,9 +126,10 @@ func DefaultConfig() *Config {
 			AllowWrites: false,
 		},
 		Updater: UpdaterConfig{
-			GitHubRepo:     "gops/TallyMCP",
-			CheckOnStartup: true,
-			AutoApply:      false,
+			GitHubRepo:           "gops/TallyMCP",
+			CheckOnStartup:       true,
+			CheckIntervalSeconds: 300,
+			AutoApply:            true,
 		},
 		Log: LogConfig{
 			Level: "info",
@@ -257,6 +257,15 @@ func applyEnvOverrides(cfg *Config) {
 		valLower := strings.ToLower(strings.TrimSpace(val))
 		cfg.Relay.AllowWrites = valLower == "true" || valLower == "1" || valLower == "yes" || valLower == "on"
 	}
+	if val := os.Getenv("TALLY_UPDATER_CHECK_INTERVAL_SECONDS"); val != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n >= 0 {
+			cfg.Updater.CheckIntervalSeconds = n
+		}
+	}
+	if val := os.Getenv("TALLY_UPDATER_AUTO_APPLY"); val != "" {
+		valLower := strings.ToLower(strings.TrimSpace(val))
+		cfg.Updater.AutoApply = valLower == "true" || valLower == "1" || valLower == "yes" || valLower == "on"
+	}
 }
 
 // WriteDefaultConfigFile writes a fully commented default config file to path.
@@ -303,8 +312,10 @@ updater:
   github_repo: "gops/TallyMCP"
   # Check for new version on application startup
   check_on_startup: true
-  # Automatically apply updates if a new version is detected
-  auto_apply: false
+  # Interval in seconds to check GitHub Releases for new updates (default: 300 = 5 minutes)
+  check_interval_seconds: 300
+  # Automatically download, install, and restart if a new version is detected
+  auto_apply: true
 
 log:
   # Logging level: debug, info, warn, error

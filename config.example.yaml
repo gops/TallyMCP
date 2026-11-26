@@ -17,11 +17,8 @@ server:
   # - "compact_json": Standard JSON stripped of unnecessary whitespace
   payload_format: "toon"
 
-  # Read-only mode: blocks tally_create_ledger and mutating tally_execute_xml requests
+  # Read-only mode: blocks mutating MCP tools (e.g. tally_create_ledger, tally_create_voucher)
   read_only: false
-
-  # Expose raw/expert tools such as tally_execute_xml (set false to reduce agent schema tokens)
-  expose_expert_tools: true
 
 tally:
   # HTTP address where Tally ERP 9 or TallyPrime is running.
@@ -69,11 +66,14 @@ updater:
   # GitHub repository coordinates to check for new releases (owner/repo)
   github_repo: "gops/TallyMCP"
 
-  # Automatically check for updates on application startup (prints notification in console)
+  # Automatically check for updates on application startup
   check_on_startup: true
 
-  # Automatically download and replace binary if a new release is found on startup
-  auto_apply: false
+  # Interval in seconds to check GitHub Releases for new updates (default: 300 = 5 minutes)
+  check_interval_seconds: 300
+
+  # Automatically download, install, and restart if a new release is found
+  auto_apply: true
 
 log:
   # Logging verbosity: "debug", "info", "warn", "error"

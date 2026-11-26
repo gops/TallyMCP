@@ -296,6 +296,13 @@ func updateTrayTooltip(tip string) {
 }
 
 func restartApplication(hwnd uintptr, cfg Config) {
+	if cfg.OnRestart != nil {
+		if err := cfg.OnRestart(); err == nil {
+			procPostMessageW.Call(hwnd, WM_CLOSE, 0, 0)
+			return
+		}
+	}
+
 	exePath, err := os.Executable()
 	if err != nil {
 		return
@@ -667,10 +674,11 @@ func Run(ctx context.Context, cfg Config) error {
 	procShell_NotifyIconW.Call(NIM_ADD, uintptr(unsafe.Pointer(&nid)))
 
 	// Close tray window if context is canceled externally
+	targetHwnd := hwnd
 	go func() {
 		<-ctx.Done()
-		if currentHwnd != 0 {
-			procPostMessageW.Call(currentHwnd, WM_CLOSE, 0, 0)
+		if targetHwnd != 0 {
+			procPostMessageW.Call(targetHwnd, WM_CLOSE, 0, 0)
 		}
 	}()
 

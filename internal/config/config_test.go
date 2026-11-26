@@ -34,6 +34,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Updater.CheckOnStartup != true {
 		t.Errorf("expected check on startup true, got %v", cfg.Updater.CheckOnStartup)
 	}
+	if cfg.Updater.CheckIntervalSeconds != 300 {
+		t.Errorf("expected check interval 300s, got %d", cfg.Updater.CheckIntervalSeconds)
+	}
+	if cfg.Updater.AutoApply != true {
+		t.Errorf("expected auto_apply true by default, got %v", cfg.Updater.AutoApply)
+	}
 }
 
 func TestConfigLoadAndEnvOverrides(t *testing.T) {

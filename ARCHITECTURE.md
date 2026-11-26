@@ -302,7 +302,7 @@ sequenceDiagram
 
 1. **Semantic Version Negotiation**: Parses SemVer strings, ignoring `v` prefixes, and handles pre-releases cleanly.
 2. **Asset Matching**: Inspects release zip contents for target architecture (`amd64` or `arm64`).
-3. **Execution Safety**: The running binary can be triggered manually via CLI (`--update`), via System Tray (`Check for Updates`), or via MCP tool (`system_apply_update`).
+3. **Automatic 5-Minute Update & Restart**: By default (`check_interval_seconds: 300`, `auto_apply: true`), the server polls GitHub Releases every 5 minutes using ETag conditional requests, automatically downloads, verifies, installs newer releases, and restarts itself cleanly. Updates can also be triggered manually via CLI (`--update`), System Tray (`Check for Updates`), or MCP tool (`system_apply_update`).
 
 ---
 
@@ -434,7 +434,7 @@ To eliminate this vulnerability permanently, Tally MCP enforces a 4-layer defens
 
 ```mermaid
 flowchart TD
-    A["Incoming Request (MCP Tool / Agent / tally_execute_xml)"] --> B["Layer 1: Safe Query Construction"]
+    A["Incoming Request (MCP Tool)"] --> B["Layer 1: Safe Query Construction"]
     B -->|Clean input without dynamic TDL expressions| C["Layer 2: Universal XML Entity Escaping"]
     C -->|&amp;, &lt;, &gt;, &quot;, &apos;| D["Layer 3: Pre-Flight Static Analysis Guard (ValidateAndSanitizeTallyXML)"]
     D -->|Syntax error / unbalanced quotes / empty formula| E["Reject in Go before network dispatch"]
@@ -457,7 +457,7 @@ flowchart TD
    - All dynamic parameters across all templates (`Company`, `Group`, `LedgerName`, `Party`, `VoucherNumber`, `VoucherType`, `Name`, `Parent`) pass through `XMLEscapeText` and `XMLEscapeAttr`. Special characters like `&` in company names ("A & B Enterprises") or ledger names ("Smith & Co") are converted to valid XML entities (`&amp;`), preventing Tally's XML tokenizer from truncating tokens.
 
 4. **Pre-Flight Static Analysis Guard (`ValidateAndSanitizeTallyXML`)**:
-   - Located at the `ExecuteRawXML` choke point through which all queries (including raw queries from `tally_execute_xml`) must pass.
+   - Located at the `ExecuteRawXML` choke point through which all Tally XML queries must pass.
    - **Syntax Validation**: Decodes XML tokens via `xml.NewDecoder` to intercept unclosed tags or unescaped angle brackets.
    - **Formula Inspection**: Scans `<SYSTEM TYPE="Formulae">` blocks for:
      - Empty formula bodies (which crash Tally).
@@ -490,7 +490,6 @@ The MCP server registers the following tools in `internal/mcp/server.go`:
 | `tally_get_report` | `HandleGetReport` | Unified financial report query (Trial Balance, Profit & Loss, Balance Sheet, Day Book). |
 | `tally_get_outstandings` | `HandleGetOutstandings` | Bills receivable and payable aging schedules. |
 | `tally_generate_pdf` | `HandleGeneratePDF` | PDF report and invoice generation. |
-| `tally_execute_xml` | `HandleExecuteXML` | Raw TDL / XML query execution escape hatch. |
 | `tally_create_ledger` | `HandleCreateLedger` | Master ledger creation (auto-invalidates cache). |
 | `tally_create_voucher` | `HandleCreateVoucher` | Structured voucher creation with `preview=true` dry-run validation. |
 | `tally_alter_voucher` | `HandleAlterVoucher` | Alter an existing voucher (`preview=true` default). |
@@ -512,7 +511,7 @@ The MCP server registers the following tools in `internal/mcp/server.go`:
    - When `auth.enabled` is `true`, all endpoints require a shared secret key via `Bearer <token>`, `X-API-Key`, or `?token=`.
 3. **Write Protection & Mutation Boundaries**:
    - The majority of tools are read-only.
-   - Mutating tools (`tally_create_ledger` and `tally_execute_xml`) are clearly documented and isolated so AI agent permission systems can enforce user approval before execution.
+   - Mutating tools (`tally_create_ledger`, `tally_create_voucher`, `tally_alter_voucher`, `tally_cancel_voucher`, `tally_create_stock_item`) are clearly documented and isolated so AI agent permission systems can enforce user approval before execution.
 4. **Path Sanitization**:
    - PDF file delivery in `/files/` uses `filepath.Clean` and checks that target files reside strictly within the system's temporary directory.
 

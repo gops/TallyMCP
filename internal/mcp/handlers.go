@@ -1395,34 +1395,6 @@ func (h *ToolHandlers) HandleGeneratePDF(ctx context.Context, req mcp.CallToolRe
 	}), nil
 }
 
-// HandleExecuteXML executes an arbitrary TDL or XML query.
-func (h *ToolHandlers) HandleExecuteXML(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	xmlContent, err := req.RequireString("xml_content")
-	if err != nil {
-		return mcp.NewToolResultError("Argument 'xml_content' is required"), nil
-	}
-	if h.isReadOnly(ctx) && tally.IsMutatingXML(xmlContent) {
-		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode and cannot execute mutating XML/TDL requests."), nil
-	}
-
-	raw, err := h.tallyClient.ExecuteRawXML(ctx, xmlContent)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Tally XML execution failed: %v", err)), nil
-	}
-
-	// Attempt to convert XML to map and format as TOON for optimal LLM consumption
-	m, err := tally.XMLToMap(raw)
-	if err == nil && len(m) > 0 {
-		toonStr, err := toon.Marshal(m)
-		if err == nil {
-			return mcp.NewToolResultText(toonStr), nil
-		}
-	}
-
-	// Fallback to raw XML string
-	return mcp.NewToolResultText(string(raw)), nil
-}
-
 // HandleCreateLedger creates a new ledger account in Tally.
 func (h *ToolHandlers) HandleCreateLedger(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	if h.isReadOnly(ctx) {

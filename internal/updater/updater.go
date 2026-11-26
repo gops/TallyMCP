@@ -142,7 +142,10 @@ func ApplyUpdate(ctx context.Context, info *UpdateInfo, progressFn func(download
 		finalNewBinaryPath = extractedPath
 	}
 
-	// Ensure downloaded binary has executable permissions
+	// Ensure downloaded binary is valid for the current OS and executable
+	if !IsValidBinary(finalNewBinaryPath) {
+		return fmt.Errorf("downloaded file %s is not a valid executable binary for %s/%s", info.AssetName, runtime.GOOS, runtime.GOARCH)
+	}
 	if err := os.Chmod(finalNewBinaryPath, 0755); err != nil {
 		return fmt.Errorf("setting executable permissions: %w", err)
 	}
@@ -265,7 +268,8 @@ func extractExecutableFromZip(zipPath, targetDir, targetName string) (string, er
 				break
 			}
 		} else {
-			if base == targetName || !strings.Contains(base, ".") {
+			lower := strings.ToLower(base)
+			if base == targetName || (strings.HasPrefix(lower, "tally-mcp") && !strings.HasSuffix(lower, ".exe") && !strings.HasSuffix(lower, ".yaml") && !strings.HasSuffix(lower, ".md")) {
 				targetFile = f
 				break
 			}
@@ -312,8 +316,16 @@ func IsValidBinary(path string) bool {
 	if runtime.GOOS == "windows" {
 		return bytes.HasPrefix(header, []byte{0x4D, 0x5A})
 	}
+	// Linux ELF header starts with 0x7F, 'E', 'L', 'F'
+	if runtime.GOOS == "linux" {
+		return bytes.HasPrefix(header, []byte{0x7F, 'E', 'L', 'F'})
+	}
+	// macOS Mach-O / Universal binary headers
+	if runtime.GOOS == "darwin" {
+		return bytes.HasPrefix(header, []byte{0xCF, 0xFA, 0xED, 0xFE}) ||
+			bytes.HasPrefix(header, []byte{0xFE, 0xED, 0xFA, 0xCF}) ||
+			bytes.HasPrefix(header, []byte{0xCA, 0xFE, 0xBA, 0xBE})
+	}
 
-	// ELF header starts with 0x7F, 'E', 'L', 'F'
-	// Mach-O starts with 0xCF, 0xFA, 0xED, 0xFE etc.
 	return true
 }

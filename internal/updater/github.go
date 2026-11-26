@@ -43,47 +43,86 @@ type UpdateInfo struct {
 	ChecksumsURL   string    `json:"checksums_url,omitempty"`
 }
 
+const defaultGitHubAPIBaseURL = "https://api.github.com"
+
 // FetchLatestRelease queries GitHub Releases API for the latest version.
 func FetchLatestRelease(ctx context.Context, repo string) (*GitHubRelease, error) {
+	rel, _, _, err := fetchLatestReleaseWithETag(ctx, defaultGitHubAPIBaseURL, repo, "")
+	return rel, err
+}
+
+// FetchLatestReleaseWithETag queries GitHub Releases API using an optional ETag
+// for conditional requests (304 Not Modified responses do not count against rate limits).
+func FetchLatestReleaseWithETag(ctx context.Context, repo, etag string) (release *GitHubRelease, newETag string, notModified bool, err error) {
+	return fetchLatestReleaseWithETag(ctx, defaultGitHubAPIBaseURL, repo, etag)
+}
+
+func fetchLatestReleaseWithETag(ctx context.Context, apiBaseURL, repo, etag string) (*GitHubRelease, string, bool, error) {
 	repo = strings.TrimSpace(repo)
 	if repo == "" || repo == "owner/tally-mcp" {
-		return nil, fmt.Errorf("github repository is not configured (current: %q). Please set updater.github_repo in config.yaml", repo)
+		return nil, "", false, fmt.Errorf("github repository is not configured (current: %q). Please set updater.github_repo in config.yaml", repo)
 	}
 
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+	base := strings.TrimRight(strings.TrimSpace(apiBaseURL), "/")
+	if base == "" {
+		base = defaultGitHubAPIBaseURL
+	}
+	url := fmt.Sprintf("%s/repos/%s/releases/latest", base, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("creating http request: %w", err)
+		return nil, "", false, fmt.Errorf("creating http request: %w", err)
 	}
 
 	req.Header.Set("User-Agent", "Tally-MCP-Updater")
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetching latest release from GitHub: %w", err)
+		return nil, "", false, fmt.Errorf("fetching latest release from GitHub: %w", err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotModified {
+		return nil, etag, true, nil
+	}
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("no releases found for repository %s", repo)
+		return nil, "", false, fmt.Errorf("no releases found for repository %s", repo)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("github API returned HTTP status %d", resp.StatusCode)
+		return nil, "", false, fmt.Errorf("github API returned HTTP status %d", resp.StatusCode)
 	}
 
 	var release GitHubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return nil, fmt.Errorf("decoding release JSON: %w", err)
+		return nil, "", false, fmt.Errorf("decoding release JSON: %w", err)
 	}
 
-	return &release, nil
+	return &release, resp.Header.Get("ETag"), false, nil
 }
 
 // SelectMatchingAsset selects the release asset best matching the current operating system and CPU architecture.
 func SelectMatchingAsset(assets []GitHubAsset) (*GitHubAsset, error) {
+	goos := runtime.GOOS
 	goarch := runtime.GOARCH
+
+	if goos != "windows" {
+		for _, asset := range assets {
+			name := strings.ToLower(asset.Name)
+			if strings.Contains(name, goos) && strings.Contains(name, goarch) {
+				return &asset, nil
+			}
+		}
+		for _, asset := range assets {
+			name := strings.ToLower(asset.Name)
+			if strings.Contains(name, goos) {
+				return &asset, nil
+			}
+		}
+	}
 
 	// Primary search: Windows asset matching cpu architecture (amd64 or arm64)
 	for _, asset := range assets {
@@ -101,7 +140,7 @@ func SelectMatchingAsset(assets []GitHubAsset) (*GitHubAsset, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("no compatible Windows asset found in release for Arch=%s (checked %d assets)", goarch, len(assets))
+	return nil, fmt.Errorf("no compatible asset found in release for OS=%s Arch=%s (checked %d assets)", goos, goarch, len(assets))
 }
 
 // IsNewerVersion returns true if remoteVersion is strictly newer than currentVersion.

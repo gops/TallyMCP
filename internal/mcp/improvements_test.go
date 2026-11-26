@@ -471,18 +471,26 @@ func TestReadOnlyModeHandlers(t *testing.T) {
 		t.Errorf("expected read-only error for HandleCreateLedger, got %+v", res)
 	}
 
-	// 2. mutating tally_execute_xml must be blocked in read-only mode
-	xmlRes, err := handlers.HandleExecuteXML(ctx, mcp.CallToolRequest{
+	// 2. tally_create_voucher must be blocked in read-only mode when preview=false
+	vRes, err := handlers.HandleCreateVoucher(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name:      "tally_execute_xml",
-			Arguments: map[string]any{"xml_content": `<ENVELOPE><HEADER><TALLYREQUEST>Import</TALLYREQUEST></HEADER></ENVELOPE>`},
+			Name: "tally_create_voucher",
+			Arguments: map[string]any{
+				"voucher_type": "Receipt",
+				"date":         "20261126",
+				"preview":      false,
+				"entries": []any{
+					map[string]any{"ledger": "Cash", "amount": -100.0},
+					map[string]any{"ledger": "Acme Corp", "amount": 100.0},
+				},
+			},
 		},
 	})
 	if err != nil {
-		t.Fatalf("HandleExecuteXML returned unexpected error: %v", err)
+		t.Fatalf("HandleCreateVoucher returned unexpected error: %v", err)
 	}
-	if !xmlRes.IsError || !strings.Contains(xmlRes.Content[0].(mcp.TextContent).Text, "read-only mode") {
-		t.Errorf("expected read-only error for mutating HandleExecuteXML, got %+v", xmlRes)
+	if !vRes.IsError || !strings.Contains(vRes.Content[0].(mcp.TextContent).Text, "read-only mode") {
+		t.Errorf("expected read-only error for HandleCreateVoucher, got %+v", vRes)
 	}
 }
 
@@ -533,10 +541,16 @@ func TestAgentSpeedFeatures(t *testing.T) {
 		t.Errorf("expected batch response to include both found ledgers and error for Missing Co, got:\n%s", txt)
 	}
 
-	// 2. ReadOnly & ExposeExpertTools=false hide tally_create_ledger and tally_execute_xml from tools/list
+	// 2. tally_execute_xml is removed, and ReadOnly hides mutating tools from tools/list
 	cfg := config.DefaultConfig()
+	srvDefault := mcppkg.NewServer(cfg, tallyClient, "v1.0.20")
+	defaultListReq := []byte(`{"jsonrpc":"2.0","id":20,"method":"tools/list","params":{}}`)
+	defaultListResp := string(srvDefault.ServeRelayMCP(ctx, defaultListReq, true))
+	if strings.Contains(defaultListResp, `"tally_execute_xml"`) {
+		t.Errorf("expected tally_execute_xml to be completely removed from tools/list")
+	}
+
 	cfg.Server.ReadOnly = true
-	cfg.Server.ExposeExpertTools = false
 	srv := mcppkg.NewServer(cfg, tallyClient, "v1.0.20")
 	listReq := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	listResp := string(srv.ServeRelayMCP(ctx, listReq, false))
@@ -544,7 +558,7 @@ func TestAgentSpeedFeatures(t *testing.T) {
 		t.Errorf("expected tally_create_ledger to be hidden when read_only=true")
 	}
 	if strings.Contains(listResp, `"tally_execute_xml"`) {
-		t.Errorf("expected tally_execute_xml to be hidden when expose_expert_tools=false")
+		t.Errorf("expected tally_execute_xml to remain absent from tools/list")
 	}
 
 	// 3. tally://context resource returns today and FY dates
