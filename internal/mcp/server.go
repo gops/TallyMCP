@@ -59,10 +59,10 @@ func (s *Server) ServeRelayMCP(ctx context.Context, rawJSON []byte, allowWrites 
 }
 
 const mcpServerInstructions = `TallyMCP connects to Tally ERP 9 / TallyPrime (responses use compact TOON format by default).
-- Skip tally_status/tally_list_companies warmup; call domain tools directly.
+- Skip tally_status/tally_list_companies warmup; call domain tools directly (or read tally://context).
 - Tally sign convention: negative (-) = Debit (assets/receivables/expenses), positive (+) = Credit (liabilities/payables/income).
-- Fast shortcuts: tally_get_financial_summary (KPIs), tally_get_party_overview (customer/vendor 360: profile + unpaid bills + recent vouchers in 1 call), tally_list_vouchers(aggregate_only=true) (counts/totals), tally_get_outstandings (unpaid bills with sort/overdue_only).
-- Dates accept YYYYMMDD, YYYY-MM-DD, DD-MM-YYYY, or keywords: today, yesterday, this_month, last_month, this_fy, last_fy.`
+- Fast shortcuts: tally_get_financial_summary (KPIs + compare_to), tally_get_party_overview (customer/vendor 360 in 1 call), tally_get_ledger(names="A,B,C") (batch lookup), tally_list_vouchers(aggregate_only=true) (counts/totals), tally_get_outstandings (unpaid bills with sort/overdue_only).
+- Dates accept YYYYMMDD, YYYY-MM-DD, DD-MM-YYYY, or keywords: today, yesterday, this_month, last_month, this_fy, last_fy, last_7d, last_30d, q1, q2, q3, q4.`
 
 // NewServer initializes a new MCP Server with all tools registered.
 func NewServer(cfg *config.Config, tallyClient *tally.Client, version string) *Server {
@@ -140,11 +140,12 @@ func (s *Server) registerTools() {
 	// 5. tally_get_ledger
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_get_ledger",
-			mcp.WithDescription("Get profile and closing balance for a ledger (auto-corrects minor name mismatches)."),
+			mcp.WithDescription("Get profile and closing balance for one ledger ('name') or multiple ledgers ('names' comma-separated) in 1 call."),
 			mcp.WithReadOnlyHintAnnotation(true),
 			mcp.WithIdempotentHintAnnotation(true),
 			mcp.WithString("company", mcp.Description("Target company")),
-			mcp.WithString("name", mcp.Description("Ledger name"), mcp.Required()),
+			mcp.WithString("name", mcp.Description("Single ledger name (fuzzy matched)")),
+			mcp.WithString("names", mcp.Description("Comma-separated ledger names for batch lookup (up to 25)")),
 		),
 		s.handlers.HandleGetLedger,
 	)
@@ -255,6 +256,7 @@ func (s *Server) registerTools() {
 			mcp.WithString("company", mcp.Description("Target company")),
 			mcp.WithString("as_on_date", mcp.Description("Cutoff date (default today)")),
 			mcp.WithString("from_date", mcp.Description("Optional FY start date")),
+			mcp.WithString("compare_to", mcp.Description("Optional comparison period (e.g. 'last_month', 'last_fy', 'q1', or 'YYYYMMDD..YYYYMMDD')")),
 		),
 		s.handlers.HandleGetFinancialSummary,
 	)
@@ -270,6 +272,7 @@ func (s *Server) registerTools() {
 			mcp.WithString("from_date", mcp.Description("Start date")),
 			mcp.WithString("to_date", mcp.Description("End / as-on date")),
 			mcp.WithString("date", mcp.Description("Single date for day_book")),
+			mcp.WithString("compare_to", mcp.Description("Optional comparison period for trial_balance/profit_and_loss/balance_sheet (e.g. 'last_month', 'last_fy', 'q1')")),
 			mcp.WithBoolean("explode", mcp.Description("Expand sub-groups in P&L/Balance Sheet (default false)")),
 			mcp.WithString("search", mcp.Description("Filter rows by label/particulars")),
 			mcp.WithString("voucher_type", mcp.Description("Filter day_book by voucher type")),
@@ -325,32 +328,36 @@ func (s *Server) registerTools() {
 		s.handlers.HandleGeneratePDF,
 	)
 
-	// 14. tally_execute_xml
-	s.mcpServer.AddTool(
-		mcp.NewTool("tally_execute_xml",
-			mcp.WithDescription("Execute raw XML/TDL query against Tally (pre-flight guarded)."),
-			mcp.WithReadOnlyHintAnnotation(false),
-			mcp.WithDestructiveHintAnnotation(true),
-			mcp.WithIdempotentHintAnnotation(false),
-			mcp.WithString("xml_content", mcp.Description("XML request envelope"), mcp.Required()),
-		),
-		s.handlers.HandleExecuteXML,
-	)
+	// 14. tally_execute_xml (hidden when expose_expert_tools is false)
+	if s.cfg.Server.ExposeExpertTools {
+		s.mcpServer.AddTool(
+			mcp.NewTool("tally_execute_xml",
+				mcp.WithDescription("Execute raw XML/TDL query against Tally (pre-flight guarded)."),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(true),
+				mcp.WithIdempotentHintAnnotation(false),
+				mcp.WithString("xml_content", mcp.Description("XML request envelope"), mcp.Required()),
+			),
+			s.handlers.HandleExecuteXML,
+		)
+	}
 
-	// 15. tally_create_ledger
-	s.mcpServer.AddTool(
-		mcp.NewTool("tally_create_ledger",
-			mcp.WithDescription("Create a new ledger account in Tally."),
-			mcp.WithReadOnlyHintAnnotation(false),
-			mcp.WithDestructiveHintAnnotation(false),
-			mcp.WithIdempotentHintAnnotation(false),
-			mcp.WithString("company", mcp.Description("Target company")),
-			mcp.WithString("name", mcp.Description("Ledger name"), mcp.Required()),
-			mcp.WithString("parent", mcp.Description("Parent group or alias (e.g. 'customers', 'vendors')"), mcp.Required()),
-			mcp.WithNumber("opening_balance", mcp.Description("Optional opening balance")),
-		),
-		s.handlers.HandleCreateLedger,
-	)
+	// 15. tally_create_ledger (omitted in read_only mode to save schema tokens and prevent failed calls)
+	if !s.cfg.Server.ReadOnly {
+		s.mcpServer.AddTool(
+			mcp.NewTool("tally_create_ledger",
+				mcp.WithDescription("Create a new ledger account in Tally."),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(false),
+				mcp.WithString("company", mcp.Description("Target company")),
+				mcp.WithString("name", mcp.Description("Ledger name"), mcp.Required()),
+				mcp.WithString("parent", mcp.Description("Parent group or alias (e.g. 'customers', 'vendors')"), mcp.Required()),
+				mcp.WithNumber("opening_balance", mcp.Description("Optional opening balance")),
+			),
+			s.handlers.HandleCreateLedger,
+		)
+	}
 
 	if s.cfg.Updater.ExposeMCPTools {
 		s.mcpServer.AddTool(
@@ -375,6 +382,15 @@ func (s *Server) registerTools() {
 }
 
 func (s *Server) registerResources() {
+	s.mcpServer.AddResource(
+		mcp.NewResource("tally://context", "tally_context",
+			mcp.WithResourceTitle("Agent Session Context Snapshot"),
+			mcp.WithResourceDescription("Single-read context: connectivity, active company, loaded companies, today, current Indian FY start/end dates, and read_only status."),
+			mcp.WithMIMEType("text/plain"),
+		),
+		s.handlers.HandleResourceContext,
+	)
+
 	s.mcpServer.AddResource(
 		mcp.NewResource("tally://status", "tally_status",
 			mcp.WithResourceTitle("Tally Connection & Queue Status"),

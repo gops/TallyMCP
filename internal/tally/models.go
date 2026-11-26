@@ -327,6 +327,7 @@ type CompactLedgerStatementResult struct {
 	Offset             int                     `json:"offset,omitempty"`
 	HasMore            bool                    `json:"has_more,omitempty"`
 	NextOffset         *int                    `json:"next_offset,omitempty"`
+	Note               string                  `json:"note,omitempty"`
 	Entries            []CompactStatementEntry `json:"entries"`
 }
 
@@ -349,6 +350,7 @@ type LedgerStatementResult struct {
 	Offset             int                    `json:"offset,omitempty"`
 	HasMore            bool                   `json:"has_more,omitempty"`
 	NextOffset         *int                   `json:"next_offset,omitempty"`
+	Note               string                 `json:"note,omitempty"`
 	Entries            []LedgerStatementEntry `json:"entries"`
 }
 

@@ -354,6 +354,15 @@ func TestGetLedgerDetailReportPagingAndVoucherSummary(t *testing.T) {
 	if f, tDate := tally.ResolveDateRange("last_fy", "", now); f != "20250401" || tDate != "20260331" {
 		t.Errorf("last_fy expected 20250401..20260331, got %s..%s", f, tDate)
 	}
+	if f, tDate := tally.ResolveDateRange("q1", "", now); f != "20260401" || tDate != "20260630" {
+		t.Errorf("q1 expected 20260401..20260630, got %s..%s", f, tDate)
+	}
+	if f, tDate := tally.ResolveDateRange("q4", "", now); f != "20270101" || tDate != "20270331" {
+		t.Errorf("q4 expected 20270101..20270331, got %s..%s", f, tDate)
+	}
+	if f, tDate := tally.ResolveDateRange("last_7d", "", now); f != "20261119" || tDate != "20261125" {
+		t.Errorf("last_7d expected 20261119..20261125, got %s..%s", f, tDate)
+	}
 
 	// 6. Sorted ledgers (balance_desc)
 	sortedLedgers, err := client.FilterLedgersSortedForCompany(ctx, "", "", "", "balance_desc", 10, 0, true)

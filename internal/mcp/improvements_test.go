@@ -499,3 +499,63 @@ func TestServeRelayMCPEnforcesReadOnly(t *testing.T) {
 		t.Errorf("expected ServeRelayMCP(allowWrites=false) to block tally_create_ledger, got: %s", string(respBytes))
 	}
 }
+
+func TestAgentSpeedFeatures(t *testing.T) {
+	mockXML := `<ENVELOPE><HEADER><VERSION>1</VERSION></HEADER><BODY><DATA><COLLECTION>
+		<LEDGER NAME="Alpha Traders"><PARENT>Sundry Debtors</PARENT><CLOSINGBALANCE>-1500.00</CLOSINGBALANCE></LEDGER>
+		<LEDGER NAME="Beta Corp"><PARENT>Sundry Creditors</PARENT><CLOSINGBALANCE>2500.00</CLOSINGBALANCE></LEDGER>
+	</COLLECTION></DATA></BODY></ENVELOPE>`
+
+	tallyClient := tally.NewClient(config.TallyConfig{URL: "http://mock-tally:9000", CacheTTLSeconds: 30})
+	tallyClient.SetTransport(mockRoundTripper(func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(mockXML)),
+			Header:     make(http.Header),
+		}
+	}))
+
+	handlers := mcppkg.NewToolHandlers(tallyClient, "v1.0.20", "gops/TallyMCP", "toon")
+	ctx := context.Background()
+
+	// 1. Batch lookup via names in tally_get_ledger
+	res, err := handlers.HandleGetLedger(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "tally_get_ledger",
+			Arguments: map[string]any{"names": "Alpha Traders, Beta Corp, Missing Co"},
+		},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("HandleGetLedger batch failed: err=%v res=%+v", err, res)
+	}
+	txt := res.Content[0].(mcp.TextContent).Text
+	if !strings.Contains(txt, "Alpha Traders") || !strings.Contains(txt, "Beta Corp") || !strings.Contains(txt, "Missing Co") {
+		t.Errorf("expected batch response to include both found ledgers and error for Missing Co, got:\n%s", txt)
+	}
+
+	// 2. ReadOnly & ExposeExpertTools=false hide tally_create_ledger and tally_execute_xml from tools/list
+	cfg := config.DefaultConfig()
+	cfg.Server.ReadOnly = true
+	cfg.Server.ExposeExpertTools = false
+	srv := mcppkg.NewServer(cfg, tallyClient, "v1.0.20")
+	listReq := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+	listResp := string(srv.ServeRelayMCP(ctx, listReq, false))
+	if strings.Contains(listResp, `"tally_create_ledger"`) {
+		t.Errorf("expected tally_create_ledger to be hidden when read_only=true")
+	}
+	if strings.Contains(listResp, `"tally_execute_xml"`) {
+		t.Errorf("expected tally_execute_xml to be hidden when expose_expert_tools=false")
+	}
+
+	// 3. tally://context resource returns today and FY dates
+	ctxRes, err := handlers.HandleResourceContext(ctx, mcp.ReadResourceRequest{
+		Params: mcp.ReadResourceParams{URI: "tally://context"},
+	})
+	if err != nil || len(ctxRes) == 0 {
+		t.Fatalf("HandleResourceContext failed: err=%v", err)
+	}
+	ctxText := ctxRes[0].(mcp.TextResourceContents).Text
+	if !strings.Contains(ctxText, "current_fy_start") || !strings.Contains(ctxText, "current_fy_end") {
+		t.Errorf("expected FY dates in tally://context, got:\n%s", ctxText)
+	}
+}

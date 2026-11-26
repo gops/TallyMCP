@@ -582,10 +582,34 @@ func ResolveDateRange(fromDate, toDate string, now time.Time) (string, string) {
 		case "last_fy":
 			prev := now.AddDate(-1, 0, 0)
 			return CurrentFinancialYearStart(prev), CurrentFinancialYearEnd(prev)
-		case "last_7_days":
+		case "last_7_days", "last_7d":
 			return now.AddDate(0, 0, -6).Format("20060102"), now.Format("20060102")
-		case "last_30_days":
+		case "last_30_days", "last_30d":
 			return now.AddDate(0, 0, -29).Format("20060102"), now.Format("20060102")
+		case "q1":
+			fyYear := now.Year()
+			if now.Month() < time.April {
+				fyYear--
+			}
+			return fmt.Sprintf("%04d0401", fyYear), fmt.Sprintf("%04d0630", fyYear)
+		case "q2":
+			fyYear := now.Year()
+			if now.Month() < time.April {
+				fyYear--
+			}
+			return fmt.Sprintf("%04d0701", fyYear), fmt.Sprintf("%04d0930", fyYear)
+		case "q3":
+			fyYear := now.Year()
+			if now.Month() < time.April {
+				fyYear--
+			}
+			return fmt.Sprintf("%04d1001", fyYear), fmt.Sprintf("%04d1231", fyYear)
+		case "q4":
+			fyYear := now.Year()
+			if now.Month() < time.April {
+				fyYear--
+			}
+			return fmt.Sprintf("%04d0101", fyYear+1), fmt.Sprintf("%04d0331", fyYear+1)
 		}
 	}
 	return CleanDateWithNow(fromDate, now), CleanDateWithNow(toDate, now)

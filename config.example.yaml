@@ -20,6 +20,9 @@ server:
   # Read-only mode: blocks tally_create_ledger and mutating tally_execute_xml requests
   read_only: false
 
+  # Expose raw/expert tools such as tally_execute_xml (set false to reduce agent schema tokens)
+  expose_expert_tools: true
+
 tally:
   # HTTP address where Tally ERP 9 or TallyPrime is running.
   # To enable in Tally:

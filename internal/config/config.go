@@ -43,6 +43,8 @@ type ServerConfig struct {
 	PayloadFormat string `yaml:"payload_format"`
 	// ReadOnly blocks mutating MCP operations (tally_create_ledger and mutating tally_execute_xml requests).
 	ReadOnly bool `yaml:"read_only"`
+	// ExposeExpertTools registers raw/expert tools like tally_execute_xml (default true).
+	ExposeExpertTools bool `yaml:"expose_expert_tools"`
 }
 
 // TallyConfig defines connection details to Tally ERP 9 / TallyPrime.
@@ -100,9 +102,10 @@ type LogConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			ListenAddress: "0.0.0.0:8080",
-			Transport:     "sse",
-			PayloadFormat: "toon",
+			ListenAddress:     "0.0.0.0:8080",
+			Transport:         "sse",
+			PayloadFormat:     "toon",
+			ExposeExpertTools: true,
 		},
 		Tally: TallyConfig{
 			URL:             "http://localhost:9000",

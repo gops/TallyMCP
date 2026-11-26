@@ -62,19 +62,41 @@ func NewToolHandlers(tallyClient *tally.Client, appVersion, githubRepo, defaultF
 	}
 }
 
+const maxToolOutputBytes = 16 * 1024
+
+// capOutputSize enforces a soft byte budget so oversized payloads don't bloat the LLM context window.
+func capOutputSize(out string) string {
+	if len(out) <= maxToolOutputBytes {
+		return out
+	}
+	cut := maxToolOutputBytes
+	if idx := strings.LastIndex(out[:cut], "\n"); idx > maxToolOutputBytes/2 {
+		cut = idx
+	}
+	return out[:cut] + "\n\n[TRUNCATED: response exceeded 16KB; pass smaller limit, narrower from_date/to_date, summary_only=true, or fields='...' to reduce size]"
+}
+
 // formatOutput serializes data into the requested format ("toon" or "json").
 func (h *ToolHandlers) formatOutput(v any, reqFormat string) (string, error) {
 	fmtChoice := strings.ToLower(strings.TrimSpace(reqFormat))
 	if fmtChoice == "" {
 		fmtChoice = strings.ToLower(strings.TrimSpace(h.defaultFormat))
 	}
+	var (
+		out string
+		err error
+	)
 	if fmtChoice == "json" || fmtChoice == "compact_json" {
-		return tally.CompactJSON(v)
+		out, err = tally.CompactJSON(v)
+	} else if fmtChoice == "pretty_json" {
+		out, err = tally.PrettyJSON(v)
+	} else {
+		out, err = toon.Marshal(v)
 	}
-	if fmtChoice == "pretty_json" {
-		return tally.PrettyJSON(v)
+	if err != nil {
+		return "", err
 	}
-	return toon.Marshal(v)
+	return capOutputSize(out), nil
 }
 
 func (h *ToolHandlers) isJSONFormat(reqFormat string) bool {
@@ -307,15 +329,64 @@ func (h *ToolHandlers) HandleListLedgers(ctx context.Context, req mcp.CallToolRe
 	return mcp.NewToolResultText(outStr), nil
 }
 
-// HandleGetLedger fetches details of a specific ledger as a clean flat profile.
+// HandleGetLedger fetches details of a specific ledger (or batch via comma-separated 'names') as a clean flat profile.
 func (h *ToolHandlers) HandleGetLedger(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	company, err := h.resolveCompany(ctx, req)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
+
+	namesCSV := strings.TrimSpace(req.GetString("names", ""))
+	if namesCSV != "" {
+		var rawNames []string
+		for _, part := range strings.Split(namesCSV, ",") {
+			if t := strings.TrimSpace(part); t != "" {
+				rawNames = append(rawNames, t)
+			}
+		}
+		if len(rawNames) == 0 {
+			return mcp.NewToolResultError("Argument 'names' did not contain any valid ledger names"), nil
+		}
+		if len(rawNames) > 25 {
+			rawNames = rawNames[:25]
+		}
+		ledgers := make([]*tally.LedgerDetail, 0, len(rawNames))
+		errs := make(map[string]string)
+		for _, raw := range rawNames {
+			resolvedName, correctedFrom, resolveErr := h.tallyClient.ResolveLedgerName(ctx, company, raw)
+			if resolveErr != nil {
+				errs[raw] = resolveErr.Error()
+				continue
+			}
+			details, dErr := h.tallyClient.GetLedgerDetailForCompany(ctx, company, resolvedName)
+			if dErr != nil {
+				errs[raw] = dErr.Error()
+				continue
+			}
+			if correctedFrom != "" {
+				details.ResolvedFrom = correctedFrom
+				details.ResolvedLedger = resolvedName
+			}
+			ledgers = append(ledgers, details)
+		}
+		res := map[string]any{
+			"company": company,
+			"count":   len(ledgers),
+			"ledgers": ledgers,
+		}
+		if len(errs) > 0 {
+			res["errors"] = errs
+		}
+		outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+		if fmtErr != nil {
+			return mcp.NewToolResultError(fmtErr.Error()), nil
+		}
+		return mcp.NewToolResultText(outStr), nil
+	}
+
 	name, err := req.RequireString("name")
 	if err != nil {
-		return mcp.NewToolResultError("Ledger 'name' argument is required"), nil
+		return mcp.NewToolResultError("Ledger 'name' or 'names' argument is required"), nil
 	}
 
 	resolvedName, correctedFrom, resolveErr := h.tallyClient.ResolveLedgerName(ctx, company, name)
@@ -573,6 +644,11 @@ func (h *ToolHandlers) HandleGetLedgerStatement(ctx context.Context, req mcp.Cal
 		pagedEntries = []tally.LedgerStatementEntry{}
 	}
 
+	var statementNote string
+	if totalEntries == 0 {
+		statementNote = fmt.Sprintf("0 entries in %s..%s; try broadening from_date/to_date (e.g. 'last_fy' or explicit YYYYMMDD)", fromDate, toDate)
+	}
+
 	var payload any
 	if summaryOnly {
 		compactEntries := make([]tally.CompactStatementEntry, len(pagedEntries))
@@ -613,6 +689,7 @@ func (h *ToolHandlers) HandleGetLedgerStatement(ctx context.Context, req mcp.Cal
 			Offset:             offset,
 			HasMore:            hasMore,
 			NextOffset:         nextOffset,
+			Note:               statementNote,
 			Entries:            compactEntries,
 		}
 	} else {
@@ -634,6 +711,7 @@ func (h *ToolHandlers) HandleGetLedgerStatement(ctx context.Context, req mcp.Cal
 			Offset:             offset,
 			HasMore:            hasMore,
 			NextOffset:         nextOffset,
+			Note:               statementNote,
 			Entries:            pagedEntries,
 		}
 	}
@@ -921,21 +999,52 @@ func (h *ToolHandlers) HandleGetOutstandings(ctx context.Context, req mcp.CallTo
 	}
 }
 
+// resolveCompareRange parses compare_to (e.g. "last_month", "last_fy", "q1", or "YYYYMMDD..YYYYMMDD") into (fromDate, toDate).
+func resolveCompareRange(compareTo string, now time.Time) (string, string) {
+	c := strings.TrimSpace(compareTo)
+	if c == "" {
+		return "", ""
+	}
+	if strings.Contains(c, "..") {
+		parts := strings.SplitN(c, "..", 2)
+		return tally.ResolveDateRange(parts[0], parts[1], now)
+	}
+	return tally.ResolveDateRange(c, "", now)
+}
+
 // HandleGetTrialBalance returns the Trial Balance.
 func (h *ToolHandlers) HandleGetTrialBalance(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	company, err := h.resolveCompany(ctx, req)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	fromDate, toDate := tally.ResolveDateRange(req.GetString("from_date", ""), req.GetString("to_date", ""), time.Now())
+	now := time.Now()
+	fromDate, toDate := tally.ResolveDateRange(req.GetString("from_date", ""), req.GetString("to_date", ""), now)
+	opts := extractReportOptions(req)
 
 	tb, err := h.tallyClient.GetTrialBalanceForCompany(ctx, company, fromDate, toDate)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get trial balance: %v", err)), nil
 	}
+	normalized := tally.NormalizeReportWithOptions("trial_balance", tb, opts)
 
-	normalized := tally.NormalizeReportWithOptions("trial_balance", tb, extractReportOptions(req))
-	outStr, err := h.formatOutput(normalized, req.GetString("format", ""))
+	var out any = normalized
+	if cmpFrom, cmpTo := resolveCompareRange(req.GetString("compare_to", ""), now); cmpFrom != "" || cmpTo != "" {
+		cmpTB, cmpErr := h.tallyClient.GetTrialBalanceForCompany(ctx, company, cmpFrom, cmpTo)
+		if cmpErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to get comparison trial balance (%s..%s): %v", cmpFrom, cmpTo, cmpErr)), nil
+		}
+		out = map[string]any{
+			"current": normalized,
+			"compare": map[string]any{
+				"from_date": cmpFrom,
+				"to_date":   cmpTo,
+				"data":      tally.NormalizeReportWithOptions("trial_balance", cmpTB, opts),
+			},
+		}
+	}
+
+	outStr, err := h.formatOutput(out, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -948,16 +1057,34 @@ func (h *ToolHandlers) HandleGetProfitAndLoss(ctx context.Context, req mcp.CallT
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	fromDate, toDate := tally.ResolveDateRange(req.GetString("from_date", ""), req.GetString("to_date", ""), time.Now())
+	now := time.Now()
+	fromDate, toDate := tally.ResolveDateRange(req.GetString("from_date", ""), req.GetString("to_date", ""), now)
 	explode := getBoolDefault(req, "explode", false)
+	opts := extractReportOptions(req)
 
 	pl, err := h.tallyClient.GetProfitAndLossWithOptions(ctx, company, fromDate, toDate, explode)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get profit and loss: %v", err)), nil
 	}
+	normalized := tally.NormalizeReportWithOptions("profit_and_loss", pl, opts)
 
-	normalized := tally.NormalizeReportWithOptions("profit_and_loss", pl, extractReportOptions(req))
-	outStr, err := h.formatOutput(normalized, req.GetString("format", ""))
+	var out any = normalized
+	if cmpFrom, cmpTo := resolveCompareRange(req.GetString("compare_to", ""), now); cmpFrom != "" || cmpTo != "" {
+		cmpPL, cmpErr := h.tallyClient.GetProfitAndLossWithOptions(ctx, company, cmpFrom, cmpTo, explode)
+		if cmpErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to get comparison P&L (%s..%s): %v", cmpFrom, cmpTo, cmpErr)), nil
+		}
+		out = map[string]any{
+			"current": normalized,
+			"compare": map[string]any{
+				"from_date": cmpFrom,
+				"to_date":   cmpTo,
+				"data":      tally.NormalizeReportWithOptions("profit_and_loss", cmpPL, opts),
+			},
+		}
+	}
+
+	outStr, err := h.formatOutput(out, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -970,6 +1097,7 @@ func (h *ToolHandlers) HandleGetBalanceSheet(ctx context.Context, req mcp.CallTo
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
+	now := time.Now()
 	asOnDate := req.GetString("as_on_date", "")
 	if asOnDate == "" {
 		asOnDate = req.GetString("to_date", "")
@@ -979,14 +1107,31 @@ func (h *ToolHandlers) HandleGetBalanceSheet(ctx context.Context, req mcp.CallTo
 	}
 	fromDate := req.GetString("from_date", "")
 	explode := getBoolDefault(req, "explode", false)
+	opts := extractReportOptions(req)
 
 	bs, err := h.tallyClient.GetBalanceSheetWithOptions(ctx, company, asOnDate, fromDate, explode)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get balance sheet: %v", err)), nil
 	}
+	normalized := tally.NormalizeReportWithOptions("balance_sheet", bs, opts)
 
-	normalized := tally.NormalizeReportWithOptions("balance_sheet", bs, extractReportOptions(req))
-	outStr, err := h.formatOutput(normalized, req.GetString("format", ""))
+	var out any = normalized
+	if cmpFrom, cmpTo := resolveCompareRange(req.GetString("compare_to", ""), now); cmpFrom != "" || cmpTo != "" {
+		cmpBS, cmpErr := h.tallyClient.GetBalanceSheetWithOptions(ctx, company, cmpTo, cmpFrom, explode)
+		if cmpErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to get comparison balance sheet (%s..%s): %v", cmpFrom, cmpTo, cmpErr)), nil
+		}
+		out = map[string]any{
+			"current": normalized,
+			"compare": map[string]any{
+				"from_date": cmpFrom,
+				"to_date":   cmpTo,
+				"data":      tally.NormalizeReportWithOptions("balance_sheet", cmpBS, opts),
+			},
+		}
+	}
+
+	outStr, err := h.formatOutput(out, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -999,6 +1144,7 @@ func (h *ToolHandlers) HandleGetFinancialSummary(ctx context.Context, req mcp.Ca
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
+	now := time.Now()
 	asOnDate := req.GetString("as_on_date", "")
 	if asOnDate == "" {
 		asOnDate = req.GetString("to_date", "")
@@ -1013,7 +1159,23 @@ func (h *ToolHandlers) HandleGetFinancialSummary(ctx context.Context, req mcp.Ca
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to generate financial summary: %v", err)), nil
 	}
 
-	outStr, err := h.formatOutput(summary, req.GetString("format", ""))
+	var out any = summary
+	if cmpFrom, cmpTo := resolveCompareRange(req.GetString("compare_to", ""), now); cmpFrom != "" || cmpTo != "" {
+		cmpSummary, cmpErr := h.tallyClient.GetFinancialSummaryForCompany(ctx, company, cmpTo, cmpFrom)
+		if cmpErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to generate comparison financial summary (%s..%s): %v", cmpFrom, cmpTo, cmpErr)), nil
+		}
+		out = map[string]any{
+			"current": summary,
+			"compare": map[string]any{
+				"from_date": cmpFrom,
+				"to_date":   cmpTo,
+				"data":      cmpSummary,
+			},
+		}
+	}
+
+	outStr, err := h.formatOutput(out, req.GetString("format", ""))
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -1389,6 +1551,39 @@ func (h *ToolHandlers) HandleResourceCompanies(ctx context.Context, req mcp.Read
 	}
 
 	outStr, _ := h.formatOutput(companies, "")
+	return []mcp.ResourceContents{
+		mcp.TextResourceContents{
+			URI:      req.Params.URI,
+			MIMEType: "text/plain",
+			Text:     outStr,
+		},
+	}, nil
+}
+
+// HandleResourceContext returns a single-read context snapshot (connectivity, active company, companies, current FY dates, today, read_only).
+func (h *ToolHandlers) HandleResourceContext(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	now := time.Now()
+	payload := map[string]any{
+		"today":            now.Format("20060102"),
+		"current_fy_start": tally.CurrentFinancialYearStart(now),
+		"current_fy_end":   tally.CurrentFinancialYearEnd(now),
+		"read_only":        h.readOnly,
+	}
+
+	status, err := h.tallyClient.Ping(ctx)
+	if err != nil {
+		payload["connected"] = false
+		payload["error"] = err.Error()
+		payload["hint"] = "Tally is not running. Use 'tally_start' to launch it."
+	} else {
+		payload["connected"] = status.Connected
+		if len(status.Companies) > 0 {
+			payload["active_company"] = status.Companies[0]
+			payload["companies"] = status.Companies
+		}
+	}
+
+	outStr, _ := h.formatOutput(payload, "")
 	return []mcp.ResourceContents{
 		mcp.TextResourceContents{
 			URI:      req.Params.URI,
