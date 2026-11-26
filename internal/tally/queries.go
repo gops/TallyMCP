@@ -39,6 +39,8 @@ const listLedgersTemplate = `<ENVELOPE>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
         {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
+        {{if .FromDate}}<SVFROMDATE>{{.FromDate}}</SVFROMDATE>{{end}}
+        {{if .ToDate}}<SVTODATE>{{.ToDate}}</SVTODATE>{{end}}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
@@ -46,6 +48,31 @@ const listLedgersTemplate = `<ENVELOPE>
             <TYPE>Ledger</TYPE>
             {{if .Group}}<CHILDOF>{{.Group}}</CHILDOF>{{end}}
             <FETCH>Name, Parent, OpeningBalance, ClosingBalance, LedgerPhone, Email, LedgerContact, CountryName, LedgerStateName, PartyGSTIN, CreditLimit</FETCH>
+          </COLLECTION>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>`
+
+const listGroupsTemplate = `<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>GroupColl</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="GroupColl" ISMODIFY="No" ISFIXED="No">
+            <TYPE>Group</TYPE>
+            <FETCH>Name, Parent</FETCH>
           </COLLECTION>
         </TDLMESSAGE>
       </TDL>
@@ -126,7 +153,7 @@ const listVouchersTemplate = `<ENVELOPE>
         <TDLMESSAGE>
           <COLLECTION NAME="VoucherColl" ISMODIFY="No" ISFIXED="No">
             <TYPE>Voucher</TYPE>
-            <FETCH>Date, VoucherTypeName, VoucherNumber, Reference, PartyLedgerName, Amount, Narration, MasterId, AllLedgerEntries.*</FETCH>
+            {{if .IncludeEntries}}<FETCH>Date, VoucherTypeName, VoucherNumber, Reference, PartyLedgerName, Amount, Narration, MasterId, AllLedgerEntries.*</FETCH>{{else}}<FETCH>Date, VoucherTypeName, VoucherNumber, Reference, PartyLedgerName, Amount, Narration, MasterId</FETCH>{{end}}
           </COLLECTION>
         </TDLMESSAGE>
       </TDL>
@@ -229,7 +256,7 @@ const profitAndLossTemplate = `<ENVELOPE>
         {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
         {{if .FromDate}}<SVFROMDATE>{{.FromDate}}</SVFROMDATE>{{end}}
         {{if .ToDate}}<SVTODATE>{{.ToDate}}</SVTODATE>{{end}}
-        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+        <EXPLODEFLAG>{{if .Explode}}Yes{{else}}No{{end}}</EXPLODEFLAG>
       </STATICVARIABLES>
     </DESC>
   </BODY>
@@ -249,7 +276,7 @@ const balanceSheetTemplate = `<ENVELOPE>
         {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
         {{if .FromDate}}<SVFROMDATE>{{.FromDate}}</SVFROMDATE>{{end}}
         {{if .AsOnDate}}<SVTODATE>{{.AsOnDate}}</SVTODATE>{{end}}
-        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+        <EXPLODEFLAG>{{if .Explode}}Yes{{else}}No{{end}}</EXPLODEFLAG>
       </STATICVARIABLES>
     </DESC>
   </BODY>
@@ -270,7 +297,7 @@ const billsReceivableTemplate = `<ENVELOPE>
         {{if .FromDate}}<SVFROMDATE>{{.FromDate}}</SVFROMDATE>{{end}}
         {{if .ToDate}}<SVTODATE>{{.ToDate}}</SVTODATE>{{end}}
         {{if .Party}}<LEDGERNAME>{{.Party}}</LEDGERNAME>{{end}}
-        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+        <EXPLODEFLAG>{{if .Explode}}Yes{{else}}No{{end}}</EXPLODEFLAG>
       </STATICVARIABLES>
     </DESC>
   </BODY>
@@ -291,7 +318,7 @@ const billsPayableTemplate = `<ENVELOPE>
         {{if .FromDate}}<SVFROMDATE>{{.FromDate}}</SVFROMDATE>{{end}}
         {{if .ToDate}}<SVTODATE>{{.ToDate}}</SVTODATE>{{end}}
         {{if .Party}}<LEDGERNAME>{{.Party}}</LEDGERNAME>{{end}}
-        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+        <EXPLODEFLAG>{{if .Explode}}Yes{{else}}No{{end}}</EXPLODEFLAG>
       </STATICVARIABLES>
     </DESC>
   </BODY>
@@ -310,7 +337,7 @@ const dayBookTemplate = `<ENVELOPE>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
         {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
         {{if .Date}}<SVFROMDATE>{{.Date}}</SVFROMDATE><SVTODATE>{{.Date}}</SVTODATE>{{end}}
-        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+        <EXPLODEFLAG>{{if .Explode}}Yes{{else}}No{{end}}</EXPLODEFLAG>
       </STATICVARIABLES>
     </DESC>
   </BODY>
@@ -360,6 +387,7 @@ const exportPDFTemplate = `<ENVELOPE>
         {{if .ToDate}}<SVTODATE>{{.ToDate}}</SVTODATE>{{end}}
         {{if .Date}}<SVFROMDATE>{{.Date}}</SVFROMDATE><SVTODATE>{{.Date}}</SVTODATE>{{end}}
         {{if .Party}}<LEDGERNAME>{{.Party}}</LEDGERNAME>{{end}}
+        {{if .MasterID}}<MASTERID>{{.MasterID}}</MASTERID>{{end}}
         {{if .VoucherNo}}<VOUCHERNUMBER>{{.VoucherNo}}</VOUCHERNUMBER>{{end}}
         {{if .VoucherType}}<VOUCHERTYPENAME>{{.VoucherType}}</VOUCHERTYPENAME>{{end}}
         <EXPLODEFLAG>Yes</EXPLODEFLAG>
@@ -414,9 +442,23 @@ func BuildListCompaniesXML() string {
 
 // BuildListLedgersXML generates the XML for exporting ledgers, optionally filtered by group.
 func BuildListLedgersXML(company, group string) (string, error) {
+	return BuildListLedgersXMLWithDates(company, group, "", "")
+}
+
+// BuildListLedgersXMLWithDates generates the XML for exporting ledgers with optional group and date scope.
+func BuildListLedgersXMLWithDates(company, group, fromDate, toDate string) (string, error) {
 	return executeTemplate("listLedgers", listLedgersTemplate, map[string]string{
+		"Company":  XMLEscapeText(company),
+		"Group":    XMLEscapeText(group),
+		"FromDate": CleanDate(fromDate),
+		"ToDate":   CleanDate(toDate),
+	})
+}
+
+// BuildListGroupsXML generates the XML for exporting account group hierarchy.
+func BuildListGroupsXML(company string) (string, error) {
+	return executeTemplate("listGroups", listGroupsTemplate, map[string]string{
 		"Company": XMLEscapeText(company),
-		"Group":   XMLEscapeText(group),
 	})
 }
 
@@ -441,12 +483,112 @@ func BuildListStockItemsXML(company, group string) (string, error) {
 	})
 }
 
-// CleanDate strips hyphens and slashes from dates so formats like YYYY-MM-DD or YYYY/MM/DD convert to YYYYMMDD required by Tally.
+// CleanDate normalizes common agent date formats (YYYYMMDD, YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY,
+// RFC3339 timestamps, "02 Jan 2006", or relative keywords like "today", "yesterday", "this_fy")
+// into the YYYYMMDD format required by Tally.
 func CleanDate(d string) string {
-	d = strings.TrimSpace(d)
-	d = strings.ReplaceAll(d, "-", "")
-	d = strings.ReplaceAll(d, "/", "")
-	return d
+	return CleanDateWithNow(d, time.Now())
+}
+
+// CleanDateWithNow normalizes dates and relative date keywords against a reference time.
+func CleanDateWithNow(d string, now time.Time) string {
+	s := strings.TrimSpace(d)
+	if s == "" {
+		return ""
+	}
+	if len(s) == 8 && isDigitsOnly(s) {
+		return s
+	}
+
+	switch strings.ToLower(strings.ReplaceAll(s, " ", "_")) {
+	case "today":
+		return now.Format("20060102")
+	case "yesterday":
+		return now.AddDate(0, 0, -1).Format("20060102")
+	case "this_month", "month_start":
+		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).Format("20060102")
+	case "month_end":
+		first := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+		return first.AddDate(0, 1, -1).Format("20060102")
+	case "last_month":
+		firstLast := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).AddDate(0, -1, 0)
+		return firstLast.Format("20060102")
+	case "this_fy", "fy_start":
+		return CurrentFinancialYearStart(now)
+	case "fy_end":
+		return CurrentFinancialYearEnd(now)
+	case "last_fy":
+		prev := now.AddDate(-1, 0, 0)
+		return CurrentFinancialYearStart(prev)
+	}
+
+	// Handle ISO-8601 timestamps like 2026-10-01T00:00:00Z
+	if idx := strings.IndexByte(s, 'T'); idx == 10 {
+		if t, err := time.Parse("2006-01-02", s[:10]); err == nil {
+			return t.Format("20060102")
+		}
+	}
+
+	layouts := []string{
+		"2006-01-02",
+		"2006/01/02",
+		"02-01-2006",
+		"02/01/2006",
+		"2-1-2006",
+		"2/1/2006",
+		"02 Jan 2006",
+		"2 Jan 2006",
+		"02-Jan-2006",
+		"2-Jan-2006",
+		"Jan 02, 2006",
+		"Jan 2, 2006",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.Format("20060102")
+		}
+	}
+
+	// Fallback: strip hyphens and slashes
+	s = strings.ReplaceAll(s, "-", "")
+	s = strings.ReplaceAll(s, "/", "")
+	return s
+}
+
+// ResolveDateRange expands relative period keywords (e.g. "this_month", "last_month", "this_fy", "last_fy", "today", "yesterday", "last_7_days", "last_30_days")
+// into explicit YYYYMMDD fromDate and toDate pairs.
+func ResolveDateRange(fromDate, toDate string, now time.Time) (string, string) {
+	fRaw := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(fromDate), " ", "_"))
+	tRaw := strings.TrimSpace(toDate)
+
+	if tRaw == "" {
+		switch fRaw {
+		case "today":
+			d := now.Format("20060102")
+			return d, d
+		case "yesterday":
+			d := now.AddDate(0, 0, -1).Format("20060102")
+			return d, d
+		case "this_month", "mtd":
+			start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).Format("20060102")
+			return start, now.Format("20060102")
+		case "last_month":
+			firstThis := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+			firstLast := firstThis.AddDate(0, -1, 0)
+			lastDayLast := firstThis.AddDate(0, 0, -1)
+			return firstLast.Format("20060102"), lastDayLast.Format("20060102")
+		case "this_fy", "ytd":
+			return CurrentFinancialYearStart(now), CurrentFinancialYearEnd(now)
+		case "last_fy":
+			prev := now.AddDate(-1, 0, 0)
+			return CurrentFinancialYearStart(prev), CurrentFinancialYearEnd(prev)
+		case "last_7_days":
+			return now.AddDate(0, 0, -6).Format("20060102"), now.Format("20060102")
+		case "last_30_days":
+			return now.AddDate(0, 0, -29).Format("20060102"), now.Format("20060102")
+		}
+	}
+	return CleanDateWithNow(fromDate, now), CleanDateWithNow(toDate, now)
 }
 
 // CurrentFinancialYearStart returns the YYYYMMDD start date (April 1st) of the Indian Financial Year for the given time.
@@ -495,12 +637,16 @@ func BuildListVouchersXML(company, voucherType, fromDate, toDate string) (string
 // BuildFilteredListVouchersXML generates the XML for exporting vouchers scoped safely by date range and type.
 // Multi-attribute searches (party, amount tolerance, narration, reference) are processed cleanly in Go memory
 // to prevent brittle TDL formula compilation errors ("Bad formula") from crashing Tally.
+// AllLedgerEntries.* is only fetched when filtering by a specific ledger leg or explicitly requested,
+// keeping default list exports fast and TOON-tabular.
 func BuildFilteredListVouchersXML(company string, opts VoucherFilterOptions) (string, error) {
+	includeEntries := opts.IncludeEntries || strings.TrimSpace(opts.Ledger) != ""
 	data := map[string]any{
-		"Company":     XMLEscapeText(company),
-		"VoucherType": XMLEscapeText(opts.VoucherType),
-		"FromDate":    CleanDate(opts.FromDate),
-		"ToDate":      CleanDate(opts.ToDate),
+		"Company":        XMLEscapeText(company),
+		"VoucherType":    XMLEscapeText(opts.VoucherType),
+		"FromDate":       CleanDate(opts.FromDate),
+		"ToDate":         CleanDate(opts.ToDate),
+		"IncludeEntries": includeEntries,
 	}
 
 	return executeTemplate("listVouchers", listVouchersTemplate, data)
@@ -569,47 +715,77 @@ func BuildCreateLedgerXML(company, name, parent string, openingBalance float64) 
 
 // BuildProfitAndLossXML generates the XML for exporting the Profit and Loss statement.
 func BuildProfitAndLossXML(company, fromDate, toDate string) (string, error) {
-	return executeTemplate("profitAndLoss", profitAndLossTemplate, map[string]string{
+	return BuildProfitAndLossXMLWithOptions(company, fromDate, toDate, true)
+}
+
+// BuildProfitAndLossXMLWithOptions generates Profit & Loss XML with configurable explosion.
+func BuildProfitAndLossXMLWithOptions(company, fromDate, toDate string, explode bool) (string, error) {
+	return executeTemplate("profitAndLoss", profitAndLossTemplate, map[string]any{
 		"Company":  XMLEscapeText(company),
 		"FromDate": CleanDate(fromDate),
 		"ToDate":   CleanDate(toDate),
+		"Explode":  explode,
 	})
 }
 
 // BuildBalanceSheetXML generates the XML for exporting the Balance Sheet statement.
 func BuildBalanceSheetXML(company, asOnDate, fromDate string) (string, error) {
-	return executeTemplate("balanceSheet", balanceSheetTemplate, map[string]string{
+	return BuildBalanceSheetXMLWithOptions(company, asOnDate, fromDate, true)
+}
+
+// BuildBalanceSheetXMLWithOptions generates Balance Sheet XML with configurable explosion.
+func BuildBalanceSheetXMLWithOptions(company, asOnDate, fromDate string, explode bool) (string, error) {
+	return executeTemplate("balanceSheet", balanceSheetTemplate, map[string]any{
 		"Company":  XMLEscapeText(company),
 		"AsOnDate": CleanDate(asOnDate),
 		"FromDate": CleanDate(fromDate),
+		"Explode":  explode,
 	})
 }
 
 // BuildBillsReceivableXML generates the XML for exporting the Bills Receivable report.
 func BuildBillsReceivableXML(company, party, fromDate, toDate string) (string, error) {
-	return executeTemplate("billsReceivable", billsReceivableTemplate, map[string]string{
+	return BuildBillsReceivableXMLWithOptions(company, party, fromDate, toDate, true)
+}
+
+// BuildBillsReceivableXMLWithOptions generates Bills Receivable XML with configurable explosion.
+func BuildBillsReceivableXMLWithOptions(company, party, fromDate, toDate string, explode bool) (string, error) {
+	return executeTemplate("billsReceivable", billsReceivableTemplate, map[string]any{
 		"Company":  XMLEscapeText(company),
 		"Party":    XMLEscapeText(SanitizeTDLString(party)),
 		"FromDate": CleanDate(fromDate),
 		"ToDate":   CleanDate(toDate),
+		"Explode":  explode,
 	})
 }
 
 // BuildBillsPayableXML generates the XML for exporting the Bills Payable report.
 func BuildBillsPayableXML(company, party, fromDate, toDate string) (string, error) {
-	return executeTemplate("billsPayable", billsPayableTemplate, map[string]string{
+	return BuildBillsPayableXMLWithOptions(company, party, fromDate, toDate, true)
+}
+
+// BuildBillsPayableXMLWithOptions generates Bills Payable XML with configurable explosion.
+func BuildBillsPayableXMLWithOptions(company, party, fromDate, toDate string, explode bool) (string, error) {
+	return executeTemplate("billsPayable", billsPayableTemplate, map[string]any{
 		"Company":  XMLEscapeText(company),
 		"Party":    XMLEscapeText(SanitizeTDLString(party)),
 		"FromDate": CleanDate(fromDate),
 		"ToDate":   CleanDate(toDate),
+		"Explode":  explode,
 	})
 }
 
 // BuildDayBookXML generates the XML for exporting the Day Book report.
 func BuildDayBookXML(company, date string) (string, error) {
-	return executeTemplate("dayBook", dayBookTemplate, map[string]string{
+	return BuildDayBookXMLWithOptions(company, date, true)
+}
+
+// BuildDayBookXMLWithOptions generates Day Book XML with configurable explosion.
+func BuildDayBookXMLWithOptions(company, date string, explode bool) (string, error) {
+	return executeTemplate("dayBook", dayBookTemplate, map[string]any{
 		"Company": XMLEscapeText(company),
 		"Date":    CleanDate(date),
+		"Explode": explode,
 	})
 }
 
@@ -643,6 +819,15 @@ func NormalizeReportID(reportType string) string {
 
 // BuildExportPDFXML generates the XML telling Tally to export a report or voucher directly to a PDF file on disk.
 func BuildExportPDFXML(company, reportID, exportLocation, printFileName, fromDate, toDate, date, party, voucherNo, voucherType string) (string, error) {
+	return BuildExportPDFXMLWithMasterID(company, reportID, exportLocation, printFileName, fromDate, toDate, date, party, voucherNo, voucherType, "")
+}
+
+// BuildExportPDFXMLWithMasterID generates the PDF export XML with optional MasterID support.
+func BuildExportPDFXMLWithMasterID(company, reportID, exportLocation, printFileName, fromDate, toDate, date, party, voucherNo, voucherType, masterID string) (string, error) {
+	cleanMasterID := strings.TrimSpace(masterID)
+	if cleanMasterID != "" && !isDigitsOnly(cleanMasterID) {
+		cleanMasterID = ""
+	}
 	return executeTemplate("exportPDF", exportPDFTemplate, map[string]string{
 		"Company":        XMLEscapeText(company),
 		"ReportID":       NormalizeReportID(reportID),
@@ -652,6 +837,7 @@ func BuildExportPDFXML(company, reportID, exportLocation, printFileName, fromDat
 		"ToDate":         CleanDate(toDate),
 		"Date":           CleanDate(date),
 		"Party":          XMLEscapeText(SanitizeTDLString(party)),
+		"MasterID":       cleanMasterID,
 		"VoucherNo":      XMLEscapeText(SanitizeTDLString(voucherNo)),
 		"VoucherType":    XMLEscapeText(SanitizeTDLString(voucherType)),
 	})

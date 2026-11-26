@@ -17,6 +17,9 @@ server:
   # - "compact_json": Standard JSON stripped of unnecessary whitespace
   payload_format: "toon"
 
+  # Read-only mode: blocks tally_create_ledger and mutating tally_execute_xml requests
+  read_only: false
+
 tally:
   # HTTP address where Tally ERP 9 or TallyPrime is running.
   # To enable in Tally:
@@ -47,6 +50,17 @@ auth:
   #   2. Header: X-API-Key: <api_key>
   #   3. Query parameter: http://<ip>:8080/mcp?token=<api_key> (or /sse?token=<api_key>)
   api_key: "change-this-to-a-secure-random-string"
+
+  # Set to true to reject ?token= / ?api_key= query parameters and only accept header auth
+  disable_query_token: false
+
+relay:
+  # Enable outbound WebSocket relay to 1erp.work (only connects after logging in via --1erp-login)
+  enabled: true
+  # 1erp.work server URL (must be https:// for non-localhost)
+  server_url: "https://1erp.work"
+  # Keep false for safety: relayed requests from 1erp.work run in read-only mode by default
+  allow_writes: false
 
 updater:
   # GitHub repository coordinates to check for new releases (owner/repo)

@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-and-build:
+    name: Vet, Test, and Cross-Compile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          check-latest: true
+          cache: false
+
+      - name: Go Vet
+        run: go vet -mod=vendor ./...
+
+      - name: Go Test
+        run: go test -mod=vendor -race ./...
+
+      - name: Cross-Compile Windows amd64
+        env:
+          CGO_ENABLED: 0
+          GOOS: windows
+          GOARCH: amd64
+        run: go build -mod=vendor ./cmd/tally-mcp
+
+      - name: Cross-Compile Windows arm64
+        env:
+          CGO_ENABLED: 0
+          GOOS: windows
+          GOARCH: arm64
+        run: go build -mod=vendor ./cmd/tally-mcp

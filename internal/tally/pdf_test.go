@@ -66,3 +66,41 @@ func TestGenerateReportPDF(t *testing.T) {
 		t.Errorf("expected report title inside PDF stream")
 	}
 }
+
+func TestGenerateReportPDFMultiPageAndUnicode(t *testing.T) {
+	rows := make([][]string, 60)
+	for i := range rows {
+		rows[i] = []string{"Customer • Ltd", "₹1,000.00"}
+	}
+
+	pdfBytes, err := tally.GenerateReportPDF(tally.PDFReportData{
+		Title:   "Receivables",
+		Company: "Demo Co",
+		Headers: []string{"Party", "Amount"},
+		Rows:    rows,
+		Summary: map[string]string{
+			"Zebra": "1",
+			"Alpha": "2",
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateReportPDF failed: %v", err)
+	}
+
+	str := string(pdfBytes)
+	if !strings.Contains(str, "/Count 2") {
+		t.Errorf("expected multi-page PDF with /Count 2")
+	}
+	if !strings.Contains(str, `Receivables \(Continued\)`) {
+		t.Errorf("expected continuation header on page 2")
+	}
+	if !strings.Contains(str, "Page 1 of 2") || !strings.Contains(str, "Page 2 of 2") {
+		t.Errorf("expected page numbers in footer")
+	}
+	if !strings.Contains(str, "Rs.1,000.00") {
+		t.Errorf("expected rupee symbol mapped to Rs.")
+	}
+	if !strings.Contains(str, "Customer - Ltd") {
+		t.Errorf("expected bullet mapped to hyphen")
+	}
+}

@@ -40,6 +40,7 @@ type UpdateInfo struct {
 	AssetURL       string    `json:"asset_url"`
 	AssetName      string    `json:"asset_name"`
 	AssetSize      int64     `json:"asset_size"`
+	ChecksumsURL   string    `json:"checksums_url,omitempty"`
 }
 
 // FetchLatestRelease queries GitHub Releases API for the latest version.

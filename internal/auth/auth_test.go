@@ -82,6 +82,26 @@ func TestAuthMiddleware(t *testing.T) {
 		}
 	})
 
+	t.Run("Auth Enabled - Query Token Disabled", func(t *testing.T) {
+		m := auth.NewMiddleware(config.AuthConfig{Enabled: true, APIKey: "test-secret", DisableQueryToken: true})
+		handler := m.Wrap(dummyHandler)
+
+		req := httptest.NewRequest(http.MethodGet, "/sse?token=test-secret", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 Unauthorized when DisableQueryToken=true, got %d", rec.Code)
+		}
+
+		reqHeader := httptest.NewRequest(http.MethodGet, "/sse", nil)
+		reqHeader.Header.Set("Authorization", "Bearer test-secret")
+		recHeader := httptest.NewRecorder()
+		handler.ServeHTTP(recHeader, reqHeader)
+		if recHeader.Code != http.StatusOK {
+			t.Errorf("expected 200 OK with Bearer header, got %d", recHeader.Code)
+		}
+	})
+
 	t.Run("CORS Preflight OPTIONS", func(t *testing.T) {
 		m := auth.NewMiddleware(config.AuthConfig{Enabled: true, APIKey: "test-secret"})
 		handler := m.Wrap(dummyHandler)

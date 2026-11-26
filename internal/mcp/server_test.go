@@ -181,6 +181,9 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 		if !ok || serverInfo["name"] != "tally-mcp" {
 			t.Errorf("expected serverInfo.name='tally-mcp', got %v", serverInfo)
 		}
+		if instr, ok := result["instructions"].(string); !ok || !strings.Contains(instr, "tally_get_party_overview") {
+			t.Errorf("expected server instructions in initialize response, got %v", result["instructions"])
+		}
 	})
 
 	// 4. Test Streamable HTTP POST /mcp tools/list
@@ -244,21 +247,22 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 			"tally_list_companies",
 			"tally_list_ledgers",
 			"tally_get_ledger",
+			"tally_get_party_overview",
 			"tally_get_ledger_statement",
 			"tally_list_vouchers",
 			"tally_get_voucher",
 			"tally_get_stock_summary",
 			"tally_get_financial_summary",
-			"tally_get_profit_and_loss",
-			"tally_get_balance_sheet",
-			"tally_get_outstanding_receivables",
-			"tally_get_outstanding_payables",
-			"tally_get_daybook",
+			"tally_get_report",
+			"tally_get_outstandings",
 			"tally_generate_pdf",
 		} {
 			if !toolNames[expected] {
 				t.Errorf("expected tool %s to be registered", expected)
 			}
+		}
+		if toolNames["system_check_update"] || toolNames["system_apply_update"] {
+			t.Errorf("expected update tools to be hidden by default to save schema tokens")
 		}
 	})
 
@@ -347,34 +351,35 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 		}
 	})
 
-	// 7. Test Streamable HTTP tools/call financial reports dispatch
+	// 7. Test Streamable HTTP tools/call consolidated financial report & outstandings tools
 	t.Run("POST /mcp tools/call financial report tools", func(t *testing.T) {
-		reportTools := []string{
-			"tally_get_profit_and_loss",
-			"tally_get_balance_sheet",
-			"tally_get_outstanding_receivables",
-			"tally_get_outstanding_payables",
-			"tally_get_daybook",
+		calls := []struct {
+			name string
+			args map[string]any
+		}{
+			{"tally_get_report", map[string]any{"report_type": "profit_and_loss", "from_date": "20240401", "to_date": "20250331"}},
+			{"tally_get_report", map[string]any{"report_type": "balance_sheet", "from_date": "20240401", "to_date": "20250331"}},
+			{"tally_get_report", map[string]any{"report_type": "trial_balance", "from_date": "20240401", "to_date": "20250331"}},
+			{"tally_get_report", map[string]any{"report_type": "day_book", "date": "20240401"}},
+			{"tally_get_outstandings", map[string]any{"type": "receivable", "from_date": "20240401", "to_date": "20250331"}},
+			{"tally_get_outstandings", map[string]any{"type": "payable", "from_date": "20240401", "to_date": "20250331"}},
 		}
 
-		for idx, toolName := range reportTools {
+		for idx, c := range calls {
 			callPayload := map[string]any{
 				"jsonrpc": "2.0",
 				"id":      100 + idx,
 				"method":  "tools/call",
 				"params": map[string]any{
-					"name": toolName,
-					"arguments": map[string]any{
-						"from_date": "20240401",
-						"to_date":   "20250331",
-					},
+					"name":      c.name,
+					"arguments": c.args,
 				},
 			}
 			data, _ := json.Marshal(callPayload)
 
 			req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewReader(data))
 			if err != nil {
-				t.Fatalf("failed to create request for %s: %v", toolName, err)
+				t.Fatalf("failed to create request for %s: %v", c.name, err)
 			}
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Accept", "application/json, text/event-stream")
@@ -384,12 +389,12 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
-				t.Fatalf("POST /mcp %s failed: %v", toolName, err)
+				t.Fatalf("POST /mcp %s failed: %v", c.name, err)
 			}
 			resp.Body.Close()
 
 			if resp.StatusCode != http.StatusOK {
-				t.Errorf("%s: expected 200 OK, got %d", toolName, resp.StatusCode)
+				t.Errorf("%s: expected 200 OK, got %d", c.name, resp.StatusCode)
 			}
 		}
 	})
@@ -977,8 +982,8 @@ func TestStreamableHTTPEndpoint(t *testing.T) {
 		if entry["contra_ledger"] != "IDBI BANK-000198" {
 			t.Errorf("expected contra_ledger 'IDBI BANK-000198', got %v", entry["contra_ledger"])
 		}
-		if entry["credit"] != 206000.0 {
-			t.Errorf("expected credit 206000.0, got %v", entry["credit"])
+		if entry["amount"] != 206000.0 {
+			t.Errorf("expected compact signed amount 206000.0, got %v", entry["amount"])
 		}
 	})
 
@@ -1201,13 +1206,14 @@ func TestHandleGetLedgerStatement(t *testing.T) {
 		t.Errorf("expected error when ledger_name is missing")
 	}
 
-	// 2. Successful statement with both Debit and Credit vouchers
+	// 2. Successful statement with both Debit and Credit vouchers (full mode with summary_only=false)
 	res, err := handlers.HandleGetLedgerStatement(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name: "tally_get_ledger_statement",
 			Arguments: map[string]any{
-				"ledger_name": "SUSPANCE A/C.",
-				"format":      "json",
+				"ledger_name":  "SUSPANCE A/C.",
+				"summary_only": false,
+				"format":       "json",
 			},
 		},
 	})

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,14 +41,40 @@ func (s *Server) ActivePort() int {
 	return s.activePort
 }
 
+// ServeRelayMCP dispatches a single JSON-RPC MCP message received from the 1erp.work relay.
+// Unless allowWrites is true, mutating operations are blocked via read-only context enforcement.
+func (s *Server) ServeRelayMCP(ctx context.Context, rawJSON []byte, allowWrites bool) []byte {
+	if !allowWrites {
+		ctx = WithReadOnlyContext(ctx)
+	}
+	resp := s.mcpServer.HandleMessage(ctx, json.RawMessage(rawJSON))
+	if resp == nil {
+		return nil
+	}
+	b, err := json.Marshal(resp)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+const mcpServerInstructions = `TallyMCP connects to Tally ERP 9 / TallyPrime (responses use compact TOON format by default).
+- Skip tally_status/tally_list_companies warmup; call domain tools directly.
+- Tally sign convention: negative (-) = Debit (assets/receivables/expenses), positive (+) = Credit (liabilities/payables/income).
+- Fast shortcuts: tally_get_financial_summary (KPIs), tally_get_party_overview (customer/vendor 360: profile + unpaid bills + recent vouchers in 1 call), tally_list_vouchers(aggregate_only=true) (counts/totals), tally_get_outstandings (unpaid bills with sort/overdue_only).
+- Dates accept YYYYMMDD, YYYY-MM-DD, DD-MM-YYYY, or keywords: today, yesterday, this_month, last_month, this_fy, last_fy.`
+
 // NewServer initializes a new MCP Server with all tools registered.
 func NewServer(cfg *config.Config, tallyClient *tally.Client, version string) *Server {
+	handlers := NewToolHandlers(tallyClient, version, cfg.Updater.GitHubRepo, cfg.Server.PayloadFormat)
+	handlers.SetReadOnly(cfg.Server.ReadOnly)
+
 	s := &Server{
 		cfg:         cfg,
 		tallyClient: tallyClient,
 		version:     version,
-		handlers:    NewToolHandlers(tallyClient, version, cfg.Updater.GitHubRepo, cfg.Server.PayloadFormat),
-		mcpServer:   server.NewMCPServer("tally-mcp", version),
+		handlers:    handlers,
+		mcpServer:   server.NewMCPServer("tally-mcp", version, server.WithInstructions(mcpServerInstructions)),
 	}
 
 	s.registerTools()
@@ -60,248 +87,291 @@ func (s *Server) registerTools() {
 	// 1. tally_status
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_status",
-			mcp.WithDescription("Check connection to Tally ERP 9 / TallyPrime and list loaded companies. Optionally starts Tally if not currently running."),
-			mcp.WithBoolean("start_if_stopped", mcp.Description("If true and Tally is not running, attempts to start Tally automatically and wait for it to become ready")),
-			mcp.WithNumber("wait_seconds", mcp.Description("Maximum seconds to wait if start_if_stopped is true (default: 30)")),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation)")),
+			mcp.WithDescription("Check Tally connection and loaded companies; optionally start Tally."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithBoolean("start_if_stopped", mcp.Description("Start Tally automatically if stopped")),
+			mcp.WithNumber("wait_seconds", mcp.Description("Max seconds to wait on start (default 30)")),
 		),
 		s.handlers.HandleTallyStatus,
 	)
 
-	// tally_start
+	// 2. tally_start
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_start",
-			mcp.WithDescription("Start Tally ERP 9 or TallyPrime if it is not currently running. Automatically detects the installation path or uses configured exe_path, launches Tally, and waits for the XML server to become ready."),
-			mcp.WithString("exe_path", mcp.Description("Optional custom path to tally.exe. If omitted, uses configured exe_path or auto-detects from standard installation directories")),
-			mcp.WithNumber("wait_seconds", mcp.Description("Maximum seconds to wait for Tally to initialize and accept connections (default: 30)")),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation)")),
+			mcp.WithDescription("Start Tally ERP 9 / TallyPrime and wait for XML server readiness."),
+			mcp.WithReadOnlyHintAnnotation(false),
+			mcp.WithDestructiveHintAnnotation(false),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("exe_path", mcp.Description("Optional custom tally.exe path")),
+			mcp.WithNumber("wait_seconds", mcp.Description("Max wait seconds (default 30)")),
 		),
 		s.handlers.HandleStartTally,
 	)
 
-	// 2. tally_list_companies
+	// 3. tally_list_companies
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_list_companies",
-			mcp.WithDescription("List all companies currently loaded and active in Tally."),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation, saving 40-60% tokens)")),
+			mcp.WithDescription("List loaded companies in Tally."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
 		),
 		s.handlers.HandleListCompanies,
 	)
 
-	// 3. tally_list_ledgers
+	// 4. tally_list_ledgers
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_list_ledgers",
-			mcp.WithDescription("List account ledgers (customers, vendors, bank, cash) with balances and contact info. Supports substring search, pagination, compact mode, and TOON format."),
-			mcp.WithString("group", mcp.Description("Optional parent group name to filter ledgers (e.g. 'Sundry Debtors', 'Sundry Creditors', 'Bank Accounts', 'Cash-in-Hand')")),
-			mcp.WithString("search", mcp.Description("Optional case-insensitive substring search across ledger name, parent group, or state (e.g. 'Tata', 'HDFC', 'Karnataka')")),
-			mcp.WithNumber("limit", mcp.Description("Number of ledgers to return per page (default: 50, max: 250)")),
-			mcp.WithNumber("offset", mcp.Description("Zero-based index of the first ledger to return (default: 0)")),
-			mcp.WithBoolean("summary_only", mcp.Description("If true, returns token-minimized compact fields (name, parent, balance, state) saving up to 70% tokens")),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation, saving 40-60% tokens)")),
+			mcp.WithDescription("List ledgers (customers, vendors, bank, cash) with group aliases, search, sort, and pagination."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("group", mcp.Description("Group or alias (e.g. 'customers', 'vendors', 'Bank Accounts')")),
+			mcp.WithString("search", mcp.Description("Case-insensitive substring filter")),
+			mcp.WithString("sort", mcp.Enum("balance_desc", "balance_asc", "name_asc"), mcp.Description("Sort order")),
+			mcp.WithNumber("limit", mcp.Description("Page size (default 25, max 250)")),
+			mcp.WithNumber("offset", mcp.Description("Zero-based offset")),
+			mcp.WithBoolean("summary_only", mcp.Description("Compact fields only (default true)")),
+			mcp.WithString("fields", mcp.Description("Comma-separated fields to keep (e.g. 'name,balance')")),
 		),
 		s.handlers.HandleListLedgers,
 	)
 
-	// 4. tally_get_ledger
+	// 5. tally_get_ledger
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_get_ledger",
-			mcp.WithDescription("Get full details and closing balance for a specific ledger account. Instant sub-50ms lookup to verify current ledger balance and contact info."),
-			mcp.WithString("name", mcp.Description("Exact name of the ledger (e.g. 'GR Metalloys')"), mcp.Required()),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation, saving 40-60% tokens)")),
+			mcp.WithDescription("Get profile and closing balance for a ledger (auto-corrects minor name mismatches)."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("name", mcp.Description("Ledger name"), mcp.Required()),
 		),
 		s.handlers.HandleGetLedger,
 	)
 
-	// tally_get_ledger_statement
+	// 5b. tally_get_party_overview
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_party_overview",
+			mcp.WithDescription("1-call party 360: profile, closing balance, top pending/overdue bills, and recent vouchers."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("party", mcp.Description("Customer or vendor ledger name (fuzzy matched)"), mcp.Required()),
+			mcp.WithString("from_date", mcp.Description("Recent voucher start date or keyword (default FY start)")),
+			mcp.WithString("to_date", mcp.Description("End date")),
+			mcp.WithNumber("recent_limit", mcp.Description("Max recent vouchers (default 10, max 50)")),
+		),
+		s.handlers.HandleGetPartyOverview,
+	)
+
+	// 6. tally_get_ledger_statement
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_get_ledger_statement",
-			mcp.WithDescription("Get detailed transaction statement for a specific ledger account (Date, Voucher Type, Voucher No, Contra Account, Debit, Credit, Narration, Running Balance)."),
-			mcp.WithString("ledger_name", mcp.Required(), mcp.Description("Exact name of the ledger (e.g. 'SUSPANCE A/C.', 'HDFC BANK A/C-322')")),
-			mcp.WithString("from_date", mcp.Description("Start date in YYYYMMDD format. Defaults to current financial year start.")),
-			mcp.WithString("to_date", mcp.Description("End date in YYYYMMDD format. Defaults to current financial year end.")),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' or 'json'")),
+			mcp.WithDescription("Get paginated transaction statement with running balance for a ledger."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("ledger_name", mcp.Required(), mcp.Description("Ledger name")),
+			mcp.WithString("from_date", mcp.Description("Start date (YYYYMMDD/YYYY-MM-DD; default FY start)")),
+			mcp.WithString("to_date", mcp.Description("End date (default FY end)")),
+			mcp.WithNumber("limit", mcp.Description("Page size (default 50, max 500)")),
+			mcp.WithNumber("offset", mcp.Description("Zero-based offset")),
+			mcp.WithString("sort", mcp.Enum("asc", "desc"), mcp.Description("Date sort order (default asc)")),
+			mcp.WithBoolean("summary_only", mcp.Description("Compact signed amount + truncated narration (default true)")),
+			mcp.WithNumber("max_narration_len", mcp.Description("Max narration chars when summary_only=true (default 80, 0=full)")),
+			mcp.WithString("fields", mcp.Description("Comma-separated entry fields to keep")),
 		),
 		s.handlers.HandleGetLedgerStatement,
 	)
 
-	// 5. tally_list_vouchers
+	// 7. tally_list_vouchers
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_list_vouchers",
-			mcp.WithDescription("List and search accounting/inventory vouchers with TDL pushdown filtering, pagination, and TOON support. Filter by party name, gross amount (including GST), date range, voucher type, or general search term. TIP: For customer payments received, set voucher_type='Receipt'. For vendor payments made, set voucher_type='Payment'. Providing a recent from_date drastically reduces query latency."),
-			mcp.WithString("voucher_type", mcp.Description("Optional voucher type: 'Receipt' for customer payments received, 'Payment' for vendor payments made, 'Sales', 'Purchase', 'Journal'")),
-			mcp.WithString("party", mcp.Description("Optional party / customer / vendor ledger name to filter vouchers (e.g. 'GR Metalloys', 'Tata Steel')")),
-			mcp.WithString("ledger", mcp.Description("Optional ledger name to filter vouchers touching this account in any debit or credit split (e.g. 'SUSPANCE A/C.', 'Commission Exp')")),
-			mcp.WithNumber("amount", mcp.Description("Optional target voucher gross amount (including GST, e.g. 30090). Fast server-side match")),
-			mcp.WithNumber("amount_tolerance", mcp.Description("Optional amount tolerance in currency units (default: 1.0 when amount is specified to absorb GST rounding/paise)")),
-			mcp.WithNumber("min_amount", mcp.Description("Optional minimum voucher gross amount filter")),
-			mcp.WithNumber("max_amount", mcp.Description("Optional maximum voucher gross amount filter")),
-			mcp.WithString("search", mcp.Description("Optional case-insensitive search term matching party, voucher number, reference, or narration")),
-			mcp.WithString("from_date", mcp.Description("Optional start date in YYYYMMDD format (e.g. '20261001'). If omitted, safely defaults to the start of the current financial year (April 1) to protect query latency. Pass an earlier date (e.g. '20200401') or 'all' to search older historical records")),
-			mcp.WithString("to_date", mcp.Description("Optional end date in YYYYMMDD format (e.g. '20261031')")),
-			mcp.WithNumber("limit", mcp.Description("Number of vouchers to return per page (default: 50, max: 250)")),
-			mcp.WithNumber("offset", mcp.Description("Zero-based index of the first voucher to return (default: 0)")),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation, saving 40-60% tokens)")),
+			mcp.WithDescription("Search/list vouchers or aggregate totals. TIP: set aggregate_only=true for counts/sums; pass recent from_date for speed."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("voucher_type", mcp.Description("Receipt, Payment, Sales, Purchase, Journal, Contra")),
+			mcp.WithString("party", mcp.Description("Party ledger substring")),
+			mcp.WithString("ledger", mcp.Description("Filter touching any debit/credit split")),
+			mcp.WithNumber("amount", mcp.Description("Exact gross amount")),
+			mcp.WithNumber("amount_tolerance", mcp.Description("Amount tolerance (default 1.0)")),
+			mcp.WithNumber("min_amount", mcp.Description("Min gross amount")),
+			mcp.WithNumber("max_amount", mcp.Description("Max gross amount")),
+			mcp.WithString("search", mcp.Description("Search party, voucher_number, reference, narration")),
+			mcp.WithString("from_date", mcp.Description("Start date (default FY start; pass 'all' for full history)")),
+			mcp.WithString("to_date", mcp.Description("End date")),
+			mcp.WithString("sort", mcp.Enum("date_desc", "date_asc", "amount_desc", "amount_asc"), mcp.Description("Sort order (default date_desc)")),
+			mcp.WithBoolean("include_entries", mcp.Description("Include compact split summary (default false)")),
+			mcp.WithNumber("max_narration_len", mcp.Description("Max narration chars (default 120, 0=full)")),
+			mcp.WithBoolean("aggregate_only", mcp.Description("Return count and total_amount only (no row list)")),
+			mcp.WithString("group_by", mcp.Enum("voucher_type", "party", "month"), mcp.Description("Bucket aggregation when aggregate_only=true")),
+			mcp.WithString("fields", mcp.Description("Comma-separated voucher fields to keep")),
+			mcp.WithNumber("limit", mcp.Description("Page size (default 25, max 250)")),
+			mcp.WithNumber("offset", mcp.Description("Zero-based offset")),
 		),
 		s.handlers.HandleListVouchers,
 	)
 
-	// tally_get_voucher
+	// 8. tally_get_voucher
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_get_voucher",
-			mcp.WithDescription("Get full details and drilldown for a specific voucher by master_id or voucher_no (including all debit/credit ledger splits, inventory quantities, tax breakdown like CGST/SGST/IGST, and bill/bank allocations)."),
-			mcp.WithString("voucher_no", mcp.Description("Voucher number / invoice number to look up (e.g. '102', 'INV-2024-001')")),
-			mcp.WithString("master_id", mcp.Description("Tally internal Master ID of the voucher (e.g. '1042')")),
-			mcp.WithString("voucher_type", mcp.Description("Optional voucher type to disambiguate when voucher numbers repeat across types (e.g. 'Sales', 'Purchase', 'Payment', 'Receipt')")),
-			mcp.WithString("date", mcp.Description("Optional voucher date in YYYYMMDD format to narrow down search")),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation, saving 40-60% tokens)")),
+			mcp.WithDescription("Get full voucher drilldown (ledger splits, inventory, bills, bank allocations)."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("voucher_no", mcp.Description("Voucher/invoice number")),
+			mcp.WithString("master_id", mcp.Description("Tally Master ID")),
+			mcp.WithString("voucher_type", mcp.Description("Disambiguate voucher type")),
+			mcp.WithString("date", mcp.Description("Disambiguate voucher date")),
+			mcp.WithBoolean("include_taxes", mcp.Description("Include duplicate taxes summary (default false)")),
 		),
 		s.handlers.HandleGetVoucher,
 	)
 
-	// 6. tally_get_stock_summary
+	// 9. tally_get_stock_summary
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_get_stock_summary",
-			mcp.WithDescription("Get inventory items, stock closing balances, units, rates, and valuations. Supports substring search, pagination, compact mode, and TOON format."),
-			mcp.WithString("group", mcp.Description("Optional stock group name filter")),
-			mcp.WithString("search", mcp.Description("Optional case-insensitive substring search filter across stock item name or category (e.g. 'iPhone', 'Dell', 'Hardware')")),
-			mcp.WithNumber("limit", mcp.Description("Number of stock items to return per page (default: 50, max: 250)")),
-			mcp.WithNumber("offset", mcp.Description("Zero-based index of the first item to return (default: 0)")),
-			mcp.WithBoolean("summary_only", mcp.Description("If true, returns token-minimized compact fields (name, parent, balance, value) saving up to 70% tokens")),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation, saving 40-60% tokens)")),
+			mcp.WithDescription("List inventory items, closing balances, and valuations with search and pagination."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("group", mcp.Description("Stock group filter")),
+			mcp.WithString("search", mcp.Description("Substring search")),
+			mcp.WithNumber("limit", mcp.Description("Page size (default 25, max 250)")),
+			mcp.WithNumber("offset", mcp.Description("Zero-based offset")),
+			mcp.WithBoolean("summary_only", mcp.Description("Compact fields only (default true)")),
+			mcp.WithString("fields", mcp.Description("Comma-separated fields to keep")),
 		),
 		s.handlers.HandleListStockItems,
 	)
 
-	// tally_get_financial_summary
+	// 10. tally_get_financial_summary
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_get_financial_summary",
-			mcp.WithDescription("Get an executive KPI financial overview snapshot in < 350 tokens (Cash & Bank, Total Receivables, Top 5 Debtors, Total Payables, Top 5 Creditors, Working Capital, Revenue, and Net Profit). Supports TOON format for even lower token usage."),
-			mcp.WithString("as_on_date", mcp.Description("Cutoff date in YYYYMMDD or YYYY-MM-DD format (defaults to current date)")),
-			mcp.WithString("from_date", mcp.Description("Optional financial year start date in YYYYMMDD format")),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation, saving 40-60% tokens)")),
+			mcp.WithDescription("Executive KPI snapshot (Cash/Bank, Receivables, Payables, Top 5 Debtors/Creditors, Revenue, Net Profit)."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("as_on_date", mcp.Description("Cutoff date (default today)")),
+			mcp.WithString("from_date", mcp.Description("Optional FY start date")),
 		),
 		s.handlers.HandleGetFinancialSummary,
 	)
 
-	// 7. tally_get_trial_balance
+	// 11. tally_get_report (consolidated Trial Balance, P&L, Balance Sheet, Day Book)
 	s.mcpServer.AddTool(
-		mcp.NewTool("tally_get_trial_balance",
-			mcp.WithDescription("Fetch the Trial Balance report with debit/credit totals."),
-			mcp.WithString("from_date", mcp.Description("Start date in YYYYMMDD format")),
-			mcp.WithString("to_date", mcp.Description("End date in YYYYMMDD format")),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation, saving 40-60% tokens)")),
+		mcp.NewTool("tally_get_report",
+			mcp.WithDescription("Fetch normalized, paginated financial report (trial_balance, profit_and_loss, balance_sheet, day_book)."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("report_type", mcp.Required(), mcp.Enum("trial_balance", "profit_and_loss", "balance_sheet", "day_book"), mcp.Description("Report kind")),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("from_date", mcp.Description("Start date")),
+			mcp.WithString("to_date", mcp.Description("End / as-on date")),
+			mcp.WithString("date", mcp.Description("Single date for day_book")),
+			mcp.WithBoolean("explode", mcp.Description("Expand sub-groups in P&L/Balance Sheet (default false)")),
+			mcp.WithString("search", mcp.Description("Filter rows by label/particulars")),
+			mcp.WithString("voucher_type", mcp.Description("Filter day_book by voucher type")),
+			mcp.WithString("sort", mcp.Enum("amount_desc", "amount_asc", "name_asc", "date_asc", "date_desc"), mcp.Description("Sort order")),
+			mcp.WithNumber("min_amount", mcp.Description("Minimum absolute row amount")),
+			mcp.WithBoolean("include_zero", mcp.Description("Include zero-value rows (default false)")),
+			mcp.WithNumber("limit", mcp.Description("Page size (default 50, max 250)")),
+			mcp.WithNumber("offset", mcp.Description("Zero-based offset")),
 		),
-		s.handlers.HandleGetTrialBalance,
+		s.handlers.HandleGetReport,
 	)
 
-	// tally_get_profit_and_loss
+	// 12. tally_get_outstandings (consolidated Bills Receivable / Payable)
 	s.mcpServer.AddTool(
-		mcp.NewTool("tally_get_profit_and_loss",
-			mcp.WithDescription("Fetch the Profit & Loss statement (Revenue/Sales, COGS, Gross Profit, Indirect Expenses, Net Profit/Loss) for a given date range."),
-			mcp.WithString("from_date", mcp.Description("Start date in YYYYMMDD or YYYY-MM-DD format (e.g. '20240401')")),
-			mcp.WithString("to_date", mcp.Description("End date in YYYYMMDD or YYYY-MM-DD format (e.g. '20250331')")),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation, saving 40-60% tokens)")),
+		mcp.NewTool("tally_get_outstandings",
+			mcp.WithDescription("Fetch paginated Bills Receivable or Bills Payable aging report."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("type", mcp.Required(), mcp.Enum("receivable", "payable"), mcp.Description("receivable (debtors) or payable (creditors)")),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("party", mcp.Description("Optional party filter (fuzzy matched)")),
+			mcp.WithString("from_date", mcp.Description("Start date")),
+			mcp.WithString("to_date", mcp.Description("End date")),
+			mcp.WithBoolean("overdue_only", mcp.Description("Only overdue bills (overdue_days > 0)")),
+			mcp.WithString("sort", mcp.Enum("overdue_desc", "amount_desc", "amount_asc", "date_asc", "date_desc"), mcp.Description("Sort order")),
+			mcp.WithNumber("min_amount", mcp.Description("Minimum pending amount")),
+			mcp.WithString("search", mcp.Description("Filter by party or bill ref")),
+			mcp.WithNumber("limit", mcp.Description("Page size (default 50, max 250)")),
+			mcp.WithNumber("offset", mcp.Description("Zero-based offset")),
 		),
-		s.handlers.HandleGetProfitAndLoss,
+		s.handlers.HandleGetOutstandings,
 	)
 
-	// tally_get_balance_sheet
-	s.mcpServer.AddTool(
-		mcp.NewTool("tally_get_balance_sheet",
-			mcp.WithDescription("Fetch the Balance Sheet report (Liabilities: Capital, Loans, Sundry Creditors vs Assets: Fixed Assets, Current Assets, Bank/Cash, Sundry Debtors)."),
-			mcp.WithString("as_on_date", mcp.Description("Balance sheet as on date in YYYYMMDD or YYYY-MM-DD format (e.g. '20250331')")),
-			mcp.WithString("from_date", mcp.Description("Optional financial year start date in YYYYMMDD format (e.g. '20240401')")),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation, saving 40-60% tokens)")),
-		),
-		s.handlers.HandleGetBalanceSheet,
-	)
-
-	// tally_get_outstanding_receivables
-	s.mcpServer.AddTool(
-		mcp.NewTool("tally_get_outstanding_receivables",
-			mcp.WithDescription("Fetch the Bills Receivable report (pending dues / unpaid invoices from customers with bill dates, due dates, overdue days, and pending amounts). Ideal for checking if a customer has cleared their bills or what payments are still pending."),
-			mcp.WithString("party", mcp.Description("Optional customer / debtor ledger name to filter receivables (e.g. 'GR Metalloys'). Instant targeted ledger lookup")),
-			mcp.WithString("from_date", mcp.Description("Optional start date in YYYYMMDD format")),
-			mcp.WithString("to_date", mcp.Description("Optional end date in YYYYMMDD format")),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation, saving 40-60% tokens)")),
-		),
-		s.handlers.HandleGetOutstandingReceivables,
-	)
-
-	// tally_get_outstanding_payables
-	s.mcpServer.AddTool(
-		mcp.NewTool("tally_get_outstanding_payables",
-			mcp.WithDescription("Fetch the Bills Payable aging report (pending dues / unpaid bills to suppliers and vendors with bill dates, due dates, overdue days, and pending amounts)."),
-			mcp.WithString("party", mcp.Description("Optional supplier / creditor ledger name to filter payables")),
-			mcp.WithString("from_date", mcp.Description("Optional start date in YYYYMMDD format")),
-			mcp.WithString("to_date", mcp.Description("Optional end date in YYYYMMDD format")),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation, saving 40-60% tokens)")),
-		),
-		s.handlers.HandleGetOutstandingPayables,
-	)
-
-	// tally_get_daybook
-	s.mcpServer.AddTool(
-		mcp.NewTool("tally_get_daybook",
-			mcp.WithDescription("Fetch the Day Book report listing all accounting and inventory vouchers recorded on a specific calendar day."),
-			mcp.WithString("date", mcp.Description("The date in YYYYMMDD or YYYY-MM-DD format (defaults to current date, e.g. '20240401')")),
-			mcp.WithString("format", mcp.Description("Response format is 'toon' (Token-Oriented Object Notation, saving 40-60% tokens)")),
-		),
-		s.handlers.HandleGetDayBook,
-	)
-
-	// tally_generate_pdf
+	// 13. tally_generate_pdf
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_generate_pdf",
-			mcp.WithDescription("Instruct Tally ERP / TallyPrime to export any financial report (Balance Sheet, Profit & Loss, Day Book, Trial Balance, Outstandings) or voucher/invoice directly to a PDF file, save it in the system temp directory, and return file path, download URL, and base64 payload to the requesting agent."),
-			mcp.WithString("report_type", mcp.Description("Type of report or document to export (e.g. 'Balance Sheet', 'Profit and Loss', 'Day Book', 'Trial Balance', 'Bills Receivable', 'Bills Payable', 'Voucher', 'Invoice')"), mcp.Required()),
-			mcp.WithString("voucher_no", mcp.Description("Voucher / invoice number if exporting a specific transaction PDF (e.g. '102', 'INV-2024-001')")),
-			mcp.WithString("voucher_type", mcp.Description("Voucher type if exporting a voucher (e.g. 'Sales', 'Purchase', 'Payment', 'Receipt')")),
-			mcp.WithString("master_id", mcp.Description("Optional Tally internal Master ID of the voucher")),
-			mcp.WithString("party", mcp.Description("Optional party / customer / supplier ledger filter")),
-			mcp.WithString("from_date", mcp.Description("Optional start date in YYYYMMDD or YYYY-MM-DD format")),
-			mcp.WithString("to_date", mcp.Description("Optional end date / as-on date in YYYYMMDD or YYYY-MM-DD format")),
-			mcp.WithString("date", mcp.Description("Optional date for single-day reports like Day Book")),
-			mcp.WithString("filename", mcp.Description("Optional custom file name for the generated PDF (e.g. 'Invoice_102.pdf')")),
+			mcp.WithDescription("Export a Tally report or voucher to PDF and return its path and download URL."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(false),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("report_type", mcp.Description("Balance Sheet, Profit and Loss, Day Book, Trial Balance, Bills Receivable, Bills Payable, Voucher, Invoice"), mcp.Required()),
+			mcp.WithString("voucher_no", mcp.Description("Voucher/invoice number")),
+			mcp.WithString("voucher_type", mcp.Description("Voucher type")),
+			mcp.WithString("master_id", mcp.Description("Tally Master ID")),
+			mcp.WithString("party", mcp.Description("Party filter")),
+			mcp.WithString("from_date", mcp.Description("Start date")),
+			mcp.WithString("to_date", mcp.Description("End / as-on date")),
+			mcp.WithString("date", mcp.Description("Single date")),
+			mcp.WithString("filename", mcp.Description("Custom PDF filename")),
+			mcp.WithBoolean("include_base64", mcp.Description("Include base64_pdf in text payload (default false)")),
+			mcp.WithBoolean("include_blob", mcp.Description("Attach PDF as MCP binary resource (default false)")),
 		),
 		s.handlers.HandleGeneratePDF,
 	)
 
-	// 8. tally_execute_xml
+	// 14. tally_execute_xml
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_execute_xml",
-			mcp.WithDescription("Execute raw XML / TDL query or action directly against Tally ERP HTTP interface."),
-			mcp.WithString("xml_content", mcp.Description("Full XML request envelope to send to Tally"), mcp.Required()),
+			mcp.WithDescription("Execute raw XML/TDL query against Tally (pre-flight guarded)."),
+			mcp.WithReadOnlyHintAnnotation(false),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(false),
+			mcp.WithString("xml_content", mcp.Description("XML request envelope"), mcp.Required()),
 		),
 		s.handlers.HandleExecuteXML,
 	)
 
-	// 9. tally_create_ledger
+	// 15. tally_create_ledger
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_create_ledger",
-			mcp.WithDescription("Create a new ledger account in Tally ERP / TallyPrime."),
-			mcp.WithString("name", mcp.Description("Name of the new ledger"), mcp.Required()),
-			mcp.WithString("parent", mcp.Description("Parent group (e.g. 'Sundry Debtors', 'Sundry Creditors', 'Direct Expenses')"), mcp.Required()),
-			mcp.WithNumber("opening_balance", mcp.Description("Optional opening balance amount")),
+			mcp.WithDescription("Create a new ledger account in Tally."),
+			mcp.WithReadOnlyHintAnnotation(false),
+			mcp.WithDestructiveHintAnnotation(false),
+			mcp.WithIdempotentHintAnnotation(false),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("name", mcp.Description("Ledger name"), mcp.Required()),
+			mcp.WithString("parent", mcp.Description("Parent group or alias (e.g. 'customers', 'vendors')"), mcp.Required()),
+			mcp.WithNumber("opening_balance", mcp.Description("Optional opening balance")),
 		),
 		s.handlers.HandleCreateLedger,
 	)
 
-	// 10. system_check_update
-	s.mcpServer.AddTool(
-		mcp.NewTool("system_check_update",
-			mcp.WithDescription("Check GitHub Releases to see if a newer version of tally-mcp is available."),
-		),
-		s.handlers.HandleCheckUpdate,
-	)
+	if s.cfg.Updater.ExposeMCPTools {
+		s.mcpServer.AddTool(
+			mcp.NewTool("system_check_update",
+				mcp.WithDescription("Check GitHub Releases for a newer version of tally-mcp."),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithIdempotentHintAnnotation(true),
+			),
+			s.handlers.HandleCheckUpdate,
+		)
 
-	// 11. system_apply_update
-	s.mcpServer.AddTool(
-		mcp.NewTool("system_apply_update",
-			mcp.WithDescription("Download and apply the latest release binary from GitHub directly to this executable."),
-		),
-		s.handlers.HandleApplyUpdate,
-	)
+		s.mcpServer.AddTool(
+			mcp.NewTool("system_apply_update",
+				mcp.WithDescription("Download and apply the latest release binary from GitHub."),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(true),
+				mcp.WithIdempotentHintAnnotation(true),
+			),
+			s.handlers.HandleApplyUpdate,
+		)
+	}
 }
 
 func (s *Server) registerResources() {
@@ -381,9 +451,11 @@ func (s *Server) RunStdio(ctx context.Context) error {
 		s.handlers.SetBaseURL(fmt.Sprintf("http://localhost:%d", activePort))
 
 		mux := http.NewServeMux()
+		authMiddleware := auth.NewMiddleware(s.cfg.Auth)
 		pdfDir := filepath.Join(os.TempDir(), "tally-mcp-pdf")
 		_ = os.MkdirAll(pdfDir, 0755)
-		mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(pdfDir))))
+		PruneTempPDFs(pdfDir, 24*time.Hour)
+		mux.Handle("/files/", authMiddleware.Wrap(http.StripPrefix("/files/", noDirListingFileServer(pdfDir))))
 
 		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -452,17 +524,19 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
 	mux := http.NewServeMux()
 
 	// Streamable HTTP endpoint (/mcp) - MCP Spec 2025-03-26
-	mux.Handle("/mcp", authMiddleware.Wrap(streamableServer))
-	mux.Handle("/mcp/", authMiddleware.Wrap(streamableServer))
+	mux.Handle("/mcp", withRequestBaseURL(authMiddleware.Wrap(streamableServer)))
+	mux.Handle("/mcp/", withRequestBaseURL(authMiddleware.Wrap(streamableServer)))
 
 	// Legacy SSE endpoint (/sse and /message)
-	mux.Handle("/sse", authMiddleware.Wrap(sseServer))
-	mux.Handle("/message", authMiddleware.Wrap(sseServer))
+	mux.Handle("/sse", withRequestBaseURL(authMiddleware.Wrap(sseServer)))
+	mux.Handle("/message", withRequestBaseURL(authMiddleware.Wrap(sseServer)))
 
-	// PDF file downloads endpoint (/files/)
+	// PDF file downloads endpoint (/files/) - directory listing disabled
 	pdfDir := filepath.Join(os.TempDir(), "tally-mcp-pdf")
 	_ = os.MkdirAll(pdfDir, 0755)
-	mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(pdfDir))))
+	PruneTempPDFs(pdfDir, 24*time.Hour)
+	fileServer := http.StripPrefix("/files/", noDirListingFileServer(pdfDir))
+	mux.Handle("/files/", authMiddleware.Wrap(fileServer))
 
 	// Health endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -493,8 +567,7 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
 	// Web status / info page
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
-			// Forward unrecognized routes to SSE server for backwards compatibility
-			authMiddleware.Wrap(sseServer).ServeHTTP(w, r)
+			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -597,5 +670,66 @@ func (s *Server) RunSSEWithListener(ctx context.Context, listener net.Listener) 
 		return httpServer.Shutdown(shutdownCtx)
 	case err := <-serverErr:
 		return err
+	}
+}
+
+type ctxKeyRequestBaseURL struct{}
+
+func withRequestBaseURL(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "" {
+			scheme := "http"
+			if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+				scheme = "https"
+			}
+			ctx := context.WithValue(r.Context(), ctxKeyRequestBaseURL{}, scheme+"://"+r.Host)
+			r = r.WithContext(ctx)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requestBaseURLFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(ctxKeyRequestBaseURL{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// noDirListingFileServer serves files from dir while blocking directory listings (returning 404).
+func noDirListingFileServer(dir string) http.Handler {
+	fs := http.FileServer(http.Dir(dir))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cleanPath := strings.TrimPrefix(filepath.Clean("/"+r.URL.Path), "/")
+		if cleanPath == "" || cleanPath == "." || strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		fullPath := filepath.Join(dir, filepath.FromSlash(cleanPath))
+		if fi, err := os.Stat(fullPath); err == nil && fi.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
+		fs.ServeHTTP(w, r)
+	})
+}
+
+// PruneTempPDFs removes PDF files in dir older than maxAge.
+func PruneTempPDFs(dir string, maxAge time.Duration) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".pdf") {
+			continue
+		}
+		if info, err := entry.Info(); err == nil && info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
 	}
 }

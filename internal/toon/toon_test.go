@@ -161,3 +161,23 @@ func TestToonSavingsComparison(t *testing.T) {
 		t.Errorf("expected TOON (%d) to be smaller than JSON (%d)", toonLen, jsonLen)
 	}
 }
+
+func TestQuoteDoesNotEscapeHTMLAndEmptyTabularCell(t *testing.T) {
+	rows := []map[string]any{
+		{"name": "A & B, Pvt Ltd", "note": ""},
+		{"name": "Sales < 5%, Co", "note": "ok"},
+	}
+	got, err := Marshal(rows)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if strings.Contains(got, `\u0026`) || strings.Contains(got, `\u003c`) {
+		t.Errorf("expected raw &, < in TOON without HTML escaping, got:\n%s", got)
+	}
+	if !strings.Contains(got, `"A & B, Pvt Ltd",`) {
+		t.Errorf("expected empty tabular cell without \"\" quotes, got:\n%s", got)
+	}
+	if strings.Contains(got, `,"",`) || strings.HasSuffix(got, `,""` ) {
+		t.Errorf("expected no literal \"\" in tabular empty cell, got:\n%s", got)
+	}
+}

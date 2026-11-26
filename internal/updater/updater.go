@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +28,14 @@ func CheckForUpdate(ctx context.Context, currentVersion, repo string) (*UpdateIn
 		return nil, err
 	}
 
+	var checksumsURL string
+	for _, a := range rel.Assets {
+		if strings.EqualFold(a.Name, "checksums.txt") {
+			checksumsURL = a.BrowserDownloadURL
+			break
+		}
+	}
+
 	hasUpdate := IsNewerVersion(currentVersion, rel.TagName)
 
 	return &UpdateInfo{
@@ -38,6 +48,7 @@ func CheckForUpdate(ctx context.Context, currentVersion, repo string) (*UpdateIn
 		AssetURL:       asset.BrowserDownloadURL,
 		AssetName:      asset.Name,
 		AssetSize:      asset.Size,
+		ChecksumsURL:   checksumsURL,
 	}, nil
 }
 
@@ -111,6 +122,13 @@ func ApplyUpdate(ctx context.Context, info *UpdateInfo, progressFn func(download
 	}
 	tempFile.Close()
 
+	// Step 1b: Verify SHA-256 checksum if checksums.txt is published with the release
+	if info.ChecksumsURL != "" {
+		if err := VerifyFileChecksum(ctx, tempPath, info.AssetName, info.ChecksumsURL); err != nil {
+			return fmt.Errorf("verifying update checksum: %w", err)
+		}
+	}
+
 	// Step 2: Extract binary if the asset is a ZIP archive
 	finalNewBinaryPath := tempPath
 	if strings.HasSuffix(strings.ToLower(info.AssetName), ".zip") {
@@ -155,10 +173,66 @@ func CleanupOldBinary() {
 	if err != nil {
 		return
 	}
+	if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
+		exePath = resolved
+	}
 	oldPath := exePath + ".old"
 	if fi, err := os.Stat(oldPath); err == nil && !fi.IsDir() {
 		_ = os.Remove(oldPath)
 	}
+}
+
+// VerifyFileChecksum downloads checksums.txt from checksumsURL and verifies the SHA-256 hash of filePath.
+func VerifyFileChecksum(ctx context.Context, filePath, assetName, checksumsURL string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, checksumsURL, nil)
+	if err != nil {
+		return fmt.Errorf("creating checksum request: %w", err)
+	}
+	req.Header.Set("User-Agent", "Tally-MCP-Updater")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("downloading checksums: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("checksums download returned HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("reading checksums: %w", err)
+	}
+
+	expectedHash := ""
+	for _, line := range strings.Split(string(body), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && filepath.Base(fields[1]) == filepath.Base(assetName) {
+			expectedHash = strings.ToLower(fields[0])
+			break
+		}
+	}
+	if expectedHash == "" {
+		return fmt.Errorf("no checksum entry found for %s", assetName)
+	}
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("opening downloaded file for checksum: %w", err)
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("hashing downloaded file: %w", err)
+	}
+	actualHash := hex.EncodeToString(h.Sum(nil))
+	if actualHash != expectedHash {
+		return fmt.Errorf("SHA-256 mismatch for %s: expected %s, got %s", assetName, expectedHash, actualHash)
+	}
+	return nil
 }
 
 type progressWriter struct {

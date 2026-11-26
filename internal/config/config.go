@@ -15,8 +15,22 @@ type Config struct {
 	Server  ServerConfig  `yaml:"server"`
 	Tally   TallyConfig   `yaml:"tally"`
 	Auth    AuthConfig    `yaml:"auth"`
+	Relay   RelayConfig   `yaml:"relay"`
 	Updater UpdaterConfig `yaml:"updater"`
 	Log     LogConfig     `yaml:"log"`
+}
+
+// RelayConfig defines outbound relay settings for connecting to 1erp.work.
+type RelayConfig struct {
+	// Enabled controls whether TallyMCP connects to the 1erp.work relay when logged in.
+	Enabled bool `yaml:"enabled"`
+	// ServerURL is the base URL of the 1erp.work server (must be https:// for non-localhost).
+	ServerURL string `yaml:"server_url"`
+	// CredentialsFile optionally overrides the path where 1erp.work OAuth credentials are stored.
+	CredentialsFile string `yaml:"credentials_file"`
+	// AllowWrites allows mutating MCP operations (e.g. tally_create_ledger) over the 1erp.work relay.
+	// Defaults to false for safety: relayed requests run in read-only mode unless explicitly enabled.
+	AllowWrites bool `yaml:"allow_writes"`
 }
 
 // ServerConfig defines the MCP server settings.
@@ -27,6 +41,8 @@ type ServerConfig struct {
 	Transport string `yaml:"transport"`
 	// PayloadFormat sets the serialization format for tool responses ("toon" by default).
 	PayloadFormat string `yaml:"payload_format"`
+	// ReadOnly blocks mutating MCP operations (tally_create_ledger and mutating tally_execute_xml requests).
+	ReadOnly bool `yaml:"read_only"`
 }
 
 // TallyConfig defines connection details to Tally ERP 9 / TallyPrime.
@@ -41,8 +57,12 @@ type TallyConfig struct {
 	MaxQueueSize int `yaml:"max_queue_size"`
 	// ThrottleMs is a small cooldown period between queries in milliseconds (default: 15).
 	ThrottleMs int `yaml:"throttle_ms"`
-	// CacheTTLSeconds is the TTL for master data in-memory cache in seconds (default: 30).
+	// DisableThrottle explicitly disables inter-query throttling (e.g. when throttle_ms is 0).
+	DisableThrottle bool `yaml:"disable_throttle"`
+	// CacheTTLSeconds is the TTL for master data in-memory cache in seconds (default: 120).
 	CacheTTLSeconds int `yaml:"cache_ttl_seconds"`
+	// DisableCache explicitly disables the in-memory master data cache (e.g. when cache_ttl_seconds is 0).
+	DisableCache bool `yaml:"disable_cache"`
 	// ExePath is the optional file path to tally.exe / TallyPrime executable.
 	ExePath string `yaml:"exe_path"`
 	// AutoStart automatically attempts to start Tally if it is not running when needed.
@@ -55,6 +75,8 @@ type AuthConfig struct {
 	Enabled bool `yaml:"enabled"`
 	// APIKey is the secret token required when Enabled is true.
 	APIKey string `yaml:"api_key"`
+	// DisableQueryToken disables ?token= / ?api_key= URL query parameter auth so tokens are only accepted via headers.
+	DisableQueryToken bool `yaml:"disable_query_token"`
 }
 
 // UpdaterConfig defines self-update parameters.
@@ -65,6 +87,8 @@ type UpdaterConfig struct {
 	CheckOnStartup bool `yaml:"check_on_startup"`
 	// AutoApply automatically downloads and applies updates on startup if found.
 	AutoApply bool `yaml:"auto_apply"`
+	// ExposeMCPTools exposes system_check_update and system_apply_update in MCP tools/list (default: false to save schema tokens).
+	ExposeMCPTools bool `yaml:"expose_mcp_tools"`
 }
 
 // LogConfig defines logging verbosity.
@@ -86,13 +110,18 @@ func DefaultConfig() *Config {
 			DefaultCompany:  "",
 			MaxQueueSize:    100,
 			ThrottleMs:      15,
-			CacheTTLSeconds: 30,
+			CacheTTLSeconds: 120,
 			ExePath:         "",
 			AutoStart:       false,
 		},
 		Auth: AuthConfig{
 			Enabled: false,
 			APIKey:  "",
+		},
+		Relay: RelayConfig{
+			Enabled:     true,
+			ServerURL:   "https://1erp.work",
+			AllowWrites: false,
 		},
 		Updater: UpdaterConfig{
 			GitHubRepo:     "gops/TallyMCP",
@@ -136,6 +165,13 @@ func Load(configPath string) (*Config, string, error) {
 			if err := yaml.Unmarshal(data, cfg); err != nil {
 				return nil, "", fmt.Errorf("parsing YAML config %s: %w", candidate, err)
 			}
+			// Preserve explicit 0 values from YAML instead of falling back to defaults.
+			if cfg.Tally.ThrottleMs == 0 {
+				cfg.Tally.DisableThrottle = true
+			}
+			if cfg.Tally.CacheTTLSeconds == 0 {
+				cfg.Tally.DisableCache = true
+			}
 			resolvedPath = candidate
 			found = true
 			break
@@ -165,9 +201,17 @@ func applyEnvOverrides(cfg *Config) {
 	if val := os.Getenv("TALLY_MCP_PAYLOAD_FORMAT"); val != "" {
 		cfg.Server.PayloadFormat = strings.ToLower(strings.TrimSpace(val))
 	}
+	if val := os.Getenv("TALLY_MCP_READ_ONLY"); val != "" {
+		valLower := strings.ToLower(strings.TrimSpace(val))
+		cfg.Server.ReadOnly = valLower == "true" || valLower == "1" || valLower == "yes" || valLower == "on"
+	}
 	if val := os.Getenv("TALLY_MCP_API_KEY"); val != "" {
 		cfg.Auth.APIKey = val
 		cfg.Auth.Enabled = true
+	}
+	if val := os.Getenv("TALLY_MCP_DISABLE_QUERY_TOKEN"); val != "" {
+		valLower := strings.ToLower(strings.TrimSpace(val))
+		cfg.Auth.DisableQueryToken = valLower == "true" || valLower == "1" || valLower == "yes" || valLower == "on"
 	}
 	if val := os.Getenv("TALLY_MCP_GITHUB_REPO"); val != "" {
 		cfg.Updater.GitHubRepo = val
@@ -180,11 +224,13 @@ func applyEnvOverrides(cfg *Config) {
 	if val := os.Getenv("TALLY_THROTTLE_MS"); val != "" {
 		if n, err := strconv.Atoi(val); err == nil && n >= 0 {
 			cfg.Tally.ThrottleMs = n
+			cfg.Tally.DisableThrottle = (n == 0)
 		}
 	}
 	if val := os.Getenv("TALLY_CACHE_TTL_SECONDS"); val != "" {
 		if n, err := strconv.Atoi(val); err == nil && n >= 0 {
 			cfg.Tally.CacheTTLSeconds = n
+			cfg.Tally.DisableCache = (n == 0)
 		}
 	}
 	if val := os.Getenv("TALLY_EXE_PATH"); val != "" {
@@ -193,6 +239,20 @@ func applyEnvOverrides(cfg *Config) {
 	if val := os.Getenv("TALLY_AUTO_START"); val != "" {
 		valLower := strings.ToLower(strings.TrimSpace(val))
 		cfg.Tally.AutoStart = valLower == "true" || valLower == "1" || valLower == "yes" || valLower == "on"
+	}
+	if val := os.Getenv("TALLY_1ERP_RELAY_ENABLED"); val != "" {
+		valLower := strings.ToLower(strings.TrimSpace(val))
+		cfg.Relay.Enabled = valLower == "true" || valLower == "1" || valLower == "yes" || valLower == "on"
+	}
+	if val := os.Getenv("TALLY_1ERP_SERVER_URL"); val != "" {
+		cfg.Relay.ServerURL = strings.TrimRight(strings.TrimSpace(val), "/")
+	}
+	if val := os.Getenv("TALLY_1ERP_CREDENTIALS_FILE"); val != "" {
+		cfg.Relay.CredentialsFile = strings.TrimSpace(val)
+	}
+	if val := os.Getenv("TALLY_1ERP_ALLOW_WRITES"); val != "" {
+		valLower := strings.ToLower(strings.TrimSpace(val))
+		cfg.Relay.AllowWrites = valLower == "true" || valLower == "1" || valLower == "yes" || valLower == "on"
 	}
 }
 

@@ -1,117 +1,68 @@
-# Tally MCP Server
+# Tally MCP — Talk to Your Tally Books in Plain English
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Go Report Card](https://goreportcard.com/badge/github.com/gops/TallyMCP)](https://goreportcard.com/report/github.com/gops/TallyMCP)
 [![Release](https://img.shields.io/github/v/release/gops/TallyMCP)](https://github.com/gops/TallyMCP/releases)
+[![Platform: Windows](https://img.shields.io/badge/Platform-Windows%20%7C%20LAN-0078D6)](https://github.com/gops/TallyMCP/releases)
+
+**Turn Tally ERP 9 & TallyPrime into an AI-ready financial assistant in under 2 minutes.**  
+Connect your live accounting data to **Claude Desktop**, **Cursor**, **Windsurf**, or any MCP-compatible AI—right over your office Wi-Fi or local network.
+
+Ask questions in plain English, spot overdue invoices, check stock valuations, and generate shareable PDF reports on demand—without exporting a single Excel sheet.
 
 > [!WARNING]
-> **Disclaimer**: This is AI-generated code and can have errors or mistakes. Use at your own risk. Always verify and test thoroughly before running against production Tally accounting data.
-
-Connect **Tally ERP 9** and **TallyPrime** directly to your favorite AI assistants (**Claude Desktop**, **Cursor**, **Windsurf**, or custom AI agents) over your local network (LAN) using the standard **Model Context Protocol (MCP)**.
-
-Ask questions about your accounts in plain English, inspect ledgers and stock levels, review financial statements, and generate PDF invoices on demand—all from your AI chat window.
-
-```
-┌─────────────────────────────────┐           ┌────────────────────────────────────────┐           ┌────────────────────────────────────┐
-│   Tally ERP 9 / TallyPrime      │           │          tally-mcp.exe                 │           │        AI Assistants on LAN        │
-│   (Windows Host, Port 9000)     │ ◄───────► │       (Runs in Windows Tray)           │ ◄───────► │  (Claude Desktop, Cursor, Agents)  │
-│      Accounting Data            │ HTTP XML  │  - Zero-overload query queue           │  MCP SSE  │  Ask questions in plain English    │
-│                                 │           │  - 1-click Firewall & Autostart        │  Port     │  Inspect ledgers, P&L, stock       │
-└─────────────────────────────────┘           │  - Fast in-memory cache                │  8080     │  Generate PDF invoices             │
-                                              └────────────────────────────────────────┘           └────────────────────────────────────┘
-```
-
-> 💡 **Looking for technical architecture, internal design, or developer setup?**  
-> Check out the [ARCHITECTURE.md](./ARCHITECTURE.md) document for concurrency controls, XML/TDL protocols, token optimization, and building from source.
+> **Disclaimer**: This is AI-generated software and may contain errors. Always verify figures and test against a backup company before relying on it for production accounting decisions.
 
 ---
 
-## What Can You Do With Tally MCP?
+## Why Teams Love Tally MCP
 
-Chat with your accounting data directly using natural language:
-
-- 💬 *"Give me a 30-second financial health summary of the company."*
-- 💬 *"Who are our top 5 overdue debtors and how much do they owe?"*
-- 💬 *"Show me all sales vouchers created this week over ₹50,000."*
-- 💬 *"What is our current stock quantity and valuation for Item X?"*
-- 💬 *"Generate a PDF of the Balance Sheet as of today and give me the download link."*
-- 💬 *"Show the Profit & Loss statement for Q3 with major expense breakdowns."*
-
----
-
-## Key Features
-
-- 🖥️ **Silent Windows System Tray App**: Runs quietly in the **Windows Notification Area** without an intrusive Command Prompt (`cmd.exe`) window. Right-click the tray icon to view active port status, open the web dashboard, edit configuration, or check for updates.
-- ▶️ **1-Click Tally Launcher & Auto-Start**: If Tally is closed or not running, start it directly from the tray menu (`▶️ Start Tally`), ask your AI to start it via the `tally_start` MCP tool, or set `auto_start: true` in `config.yaml` to automatically launch Tally when needed.
-- 🛡️ **1-Click Windows Firewall Setup**: Allow inbound connections across your office Wi-Fi or LAN with a single click from the tray menu (`🛡️ Allow through Windows Firewall`) or CLI (`--firewall allow`). Automatically handles Windows UAC elevation.
-- 🔌 **Automatic Port Conflict Resolution**: If port `8080` is busy, Tally MCP automatically discovers and binds the next free port (e.g. `8081`) and updates tray indicators and dashboard links accordingly.
-- 🚀 **Start with Windows**: Toggle automatic startup on Windows boot directly from the tray menu (`🚀 Start with Windows`) or CLI (`--startup enable`). Runs safely under your user profile without requiring admin privileges.
-- 🌐 **LAN & AI Client Compatibility**: Connect from any Mac, PC, or tablet on your local network. Supports both modern **Streamable HTTP** (`/mcp`) for Cursor and Windsurf and legacy **SSE** (`/sse`) for Claude Desktop.
-- 📊 **Deep Financial & Accounting Reports**:
-  - Executive financial snapshot in $< 350$ tokens (`tally_get_financial_summary`).
-  - Profit & Loss statement (`tally_get_profit_and_loss`).
-  - Balance Sheet (`tally_get_balance_sheet`).
-  - Bills Receivable & Payable aging analysis (`tally_get_outstanding_receivables`, `tally_get_outstanding_payables`).
-  - Day Book transaction entries (`tally_get_daybook`).
-  - Real-time Trial Balance (`tally_get_trial_balance`).
-  - Deep Voucher Drilldown with debits/credits, inventory items, batch details, and tax breakdowns (`tally_get_voucher`).
-- 📄 **On-Demand PDF Generation & Delivery**: Ask your AI to export any financial report or voucher invoice straight to PDF (`tally_generate_pdf`). Automatically saved locally and downloadable via HTTP (`/files/`).
-- ⚡ **Optimized for AI Speed & Safety**: Protects Tally from freezing using a single-query serializer and cooldown buffer. Master records (ledgers, stock items) are cached in memory for sub-millisecond responses.
-- 🎯 **TOON Format by Default (40% - 60% Token Reduction)**: Formats all tool query responses in **Token-Oriented Object Notation** (TOON). By declaring object keys once in a header and streaming tabular records without braces or quotes, TOON cuts LLM prompt token costs by nearly half and doubles the amount of accounting data fitting into context windows.
-- 🔄 **Automatic Self-Updater**: Automatically notifies you when a newer version is released on GitHub. Update seamlessly in-place from the tray menu or CLI (`--update`).
-- 📜 **100% Free & Open Source**: Permissive [MIT License](./LICENSE).
+- 💬 **Instant Answers, Zero Exports** — Skip manual Tally navigation and CSV exports. Ask for your Profit & Loss, Balance Sheet, Trial Balance, or party statements directly in chat.
+- 🌐 **Works Across Your Office LAN** — Run Tally on one Windows PC and query it safely from any Mac, Windows laptop, or workstation on your network.
+- 🛡️ **Safe for Production Books** — Enable **Read-Only Mode** (`--read-only`) so AI assistants can analyze and report without ever creating or modifying a single ledger or voucher.
+- ⚡ **Protects Tally from Freezing** — Built-in request queuing and smart caching keep Tally responsive even when multiple team members ask questions at once.
+- 🖥️ **Silent Windows Tray App** — Lives neatly in your Windows System Tray with **1-click Tally launch**, **1-click Windows Firewall setup**, **Start with Windows**, and **automatic updates**.
+- 📄 **Instant PDF Reports** — Generate clean, multi-page PDF statements and voucher summaries with a direct download link for your team or clients.
+- 💸 **100% Free & Open Source** — MIT-licensed, zero cloud lock-in, and your financial data never leaves your local network unless you send it to your chosen AI client.
 
 ---
 
-## 1. Quick Setup in Tally
+## What Can You Ask?
 
-Before starting Tally MCP, enable the built-in HTTP server in your Tally software:
+### For Business Owners & CFOs
+- *"Give me a 30-second financial health summary of the company."*
+- *"What is our net profit this financial year compared to major expense heads?"*
+- *"Show our current Cash & Bank balance and working capital position."*
 
-### For TallyPrime:
-1. Press `F1` (Help) > **Settings** > **Connectivity**.
-2. Set **TallyPrime is acting as**: `Both` (or `Server`).
-3. Set **Port**: `9000` (default).
-4. Restart TallyPrime and open your desired company.
+### For Accounts & Collections
+- *"Who are our top 5 overdue customers, and how much do they owe?"*
+- *"Show the ledger statement for Acme Corp from April to today."*
+- *"Check if Roquette's ₹30,090 invoice has been entered."*
 
-### For Tally ERP 9:
-1. Press `F12` (Configure) > **Advanced Configuration**.
-2. Set **Tally is acting as**: `Both` (or `Server`).
-3. Set **Port**: `9000`.
-4. Press `Enter` to accept and restart Tally ERP 9.
-
----
-
-## 2. Installation & Running
-
-### Option A: Download Pre-compiled Binary (Recommended)
-1. Go to **[Releases](https://github.com/gops/TallyMCP/releases)** on GitHub.
-2. Download `tally-mcp-windows-amd64.zip`.
-3. Extract the folder onto your Windows PC (e.g. `C:\TallyMCP\`).
-4. Double-click `tally-mcp.exe`.
-
-### System Tray Quick Actions
-Once launched, `tally-mcp.exe` sits quietly in your Windows Notification Area (bottom-right near the clock):
-
-| Tray Menu Option | What It Does |
-|---|---|
-| **🟢 Tally MCP: Online (Port 8080)** | Shows connection status and active bound port. |
-| **▶️ Start Tally** | Launches Tally ERP 9 / TallyPrime in the background if stopped and connects to it. |
-| **🌐 Open Web Dashboard** | Opens the server status and health page in your browser. |
-| **⚙️ Open config.yaml** | Opens your configuration file in Notepad for quick editing. |
-| **🛡️ Allow through Windows Firewall** | Adds firewall rule allowing other LAN devices to connect. |
-| **🚀 Start with Windows** | Configures Tally MCP to launch automatically when Windows boots. |
-| **🔄 Check for Updates** | Checks GitHub Releases for a newer version. |
-| **🚪 Exit** | Shuts down the Tally MCP server. |
-
-> 💡 **Headless / Server Mode**: If you are running on a server without a GUI or prefer running from the command line, launch with `tally-mcp.exe --no-tray`.
+### For Sales, Inventory & Audit
+- *"Show all sales vouchers this month above ₹50,000."*
+- *"What is our closing stock quantity and valuation for 100mm Pipes?"*
+- *"Generate a PDF of today's Balance Sheet and give me the download link."*
 
 ---
 
-## 3. Connecting Your AI Assistant
+## Get Started in 3 Steps
 
-### A. Cursor & Windsurf (Streamable HTTP)
-Add Tally MCP to your AI editor settings (`.cursor/mcp.json` or MCP settings pane):
+### Step 1: Turn On Tally's Built-In Connector
+- **TallyPrime**: Press `F1` (Help) → **Settings** → **Connectivity** → Set **TallyPrime is acting as** to `Both` (Port `9000`) → Restart TallyPrime and open your company.
+- **Tally ERP 9**: Press `F12` (Configure) → **Advanced Configuration** → Set **Tally is acting as** to `Both` (Port `9000`) → Restart Tally ERP 9.
 
+### Step 2: Download & Launch Tally MCP
+1. Download the latest `tally-mcp-windows-amd64.zip` from **[GitHub Releases](https://github.com/gops/TallyMCP/releases)**.
+2. Extract it to a folder (e.g. `C:\TallyMCP\`) and double-click **`tally-mcp.exe`**.
+3. Right-click the **Tally MCP icon** in your Windows System Tray (near the clock) to:
+   - Click **🛡️ Allow through Windows Firewall** (so other computers on your office Wi-Fi can connect).
+   - Click **🚀 Start with Windows** (optional, for hands-free startup).
+
+### Step 3: Connect Your AI Assistant
+
+Replace `192.168.1.50` with your Tally PC's local IP (or `localhost` if on the same PC):
+
+**Cursor / Windsurf** (`.cursor/mcp.json`):
 ```json
 {
   "mcpServers": {
@@ -121,29 +72,8 @@ Add Tally MCP to your AI editor settings (`.cursor/mcp.json` or MCP settings pan
   }
 }
 ```
-*(Replace `192.168.1.50` with the local IP address of the Windows computer running Tally MCP. If running on the same machine, use `localhost`).*
 
-If you enabled security authentication in `config.yaml`:
-```json
-{
-  "mcpServers": {
-    "tally": {
-      "url": "http://192.168.1.50:8080/mcp",
-      "headers": {
-        "Authorization": "Bearer your-secret-api-key"
-      }
-    }
-  }
-}
-```
-
----
-
-### B. Claude Desktop (SSE)
-Add Tally MCP to your Claude Desktop configuration file:
-- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-
+**Claude Desktop** (`claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
@@ -154,182 +84,37 @@ Add Tally MCP to your Claude Desktop configuration file:
 }
 ```
 
-If you enabled security authentication in `config.yaml`:
-```json
-{
-  "mcpServers": {
-    "tally": {
-      "url": "http://192.168.1.50:8080/sse?token=your-secret-api-key"
-    }
-  }
-}
-```
-
-Restart Claude Desktop, and you will see the hammer icon with Tally's accounting tools ready to use!
+> 🔐 **Locking Down Access?** Enable `auth.enabled: true` in `config.yaml` and pass `"headers": { "Authorization": "Bearer your-secret-key" }` in your client config. Pair it with `server.read_only: true` for maximum peace of mind.
 
 ---
 
-## 4. Available AI Tools Reference
+## Built-In Capabilities at a Glance
 
-When connected, your AI assistant can automatically call these tools to fulfill your requests:
-
-| Tool Name | What Your AI Uses It For | Example Prompt |
-|---|---|---|
-| `tally_status` | Verifies Tally connection health and open companies (can also auto-launch if stopped) | *"Is Tally currently open and connected?"* |
-| `tally_start` | Launches Tally ERP 9 / TallyPrime if not running and waits for the XML port to accept queries | *"Start Tally if it isn't running."* |
-| `tally_list_companies` | Lists all active companies loaded in Tally | *"Which companies are open in Tally right now?"* |
-| `tally_get_financial_summary` | Provides a quick KPI overview (Cash, Bank, Debtors, Creditors, Revenue, Profit) in < 350 tokens | *"Give me a high-level summary of our financials."* |
-| `tally_list_ledgers` | Searches and lists accounts (customers, vendors, banks, expenses) with balances | *"List all Sundry Debtors located in Maharashtra."* |
-| `tally_get_ledger` | Retrieves complete ledger details (address, credit limits, GST numbers, balance) | *"Show full contact and account info for ABC Corp."* |
-| `tally_get_ledger_statement` | Detailed transaction statement for any ledger (Date, Voucher Type, Voucher No, Contra Account, Debit, Credit, Narration, Running Balance) | *"Show statement for SUSPANCE A/C. from April to October 2026."* |
-| `tally_list_vouchers` | Fast-filtered transaction lookup by party name, gross invoice amount (exact/range/tolerance), date range, voucher type, or free-text query with server-side TDL pushdown | *"Check if Roquette's 30,090 rs invoice is created"* or *"Show all sales vouchers entered in October 2026."* |
-| `tally_get_voucher` | Full transaction drilldown (all debit/credit legs, inventory items, batch numbers, tax breakdown) | *"Give me the full breakdown of Invoice #INV-1042."* |
-| `tally_get_stock_summary` | Checks inventory quantities, units, and stock valuations | *"What is our available stock for 100mm Pipes?"* |
-| `tally_get_trial_balance` | Retrieves the Trial Balance report with debits and credits | *"Fetch the current Trial Balance statement."* |
-| `tally_get_profit_and_loss` | Retrieves the Profit & Loss statement (Revenue, Gross Profit, Expenses, Net Profit) | *"What is our net profit for the current financial year?"* |
-| `tally_get_balance_sheet` | Retrieves the Balance Sheet (Capital, Liabilities, Assets, Loans) | *"Show our current Balance Sheet as of today."* |
-| `tally_get_outstanding_receivables` | Generates the aging schedule of pending customer bills (who owes us money) | *"Show overdue bills receivable older than 30 days."* |
-| `tally_get_outstanding_payables` | Generates the aging schedule of pending vendor bills (who we owe money to) | *"What payments are due to our vendors this week?"* |
-| `tally_get_daybook` | Shows all accounting transactions entered on a specific day | *"Show all Day Book entries for yesterday."* |
-| `tally_generate_pdf` | Instructs Tally to export any financial statement or invoice to PDF and returns a download link | *"Export a PDF invoice for voucher #INV-1042."* |
-| `tally_create_ledger` | Creates a new account ledger in Tally | *"Create a new Sundry Debtor named Global Logistics."* |
-| `tally_execute_xml` | Runs custom raw XML / TDL queries against Tally | *(For power users and custom TDL scripts)* |
-
-> ⚡ **Targeted Query Acceleration & Safety**: `tally_list_vouchers` supports direct filtering by `party` (or aliases `customer`, `vendor`, `ledger_name`), `amount` (with optional `amount_tolerance`), `min_amount`, `max_amount`, and `search`. When `from_date` is omitted, queries safely default to the start of the current Indian financial year (April 1) to prevent latency spikes on enterprise databases with decades of history.
-
-### MCP Prompts & Guided Workflows
-
-Tally MCP provides built-in MCP Prompts that inject domain expertise and structured workflows into your AI assistant:
-
-| Prompt Name | Description |
+| Area | What's Included |
 |---|---|
-| `tally_accounting_rules` | Teaches the AI essential Indian GAAP & Tally terminology (Sundry Debtors = Customers, Sundry Creditors = Vendors, Contra, FY April–March) and how to interpret TOON tabular formats. |
-| `financial_health_audit` | A structured 5-step executive audit workflow analyzing liquidity (Cash/Bank), credit risks (overdue receivables), liability obligations (payables), and profit margins. |
-
-### MCP Resources (Direct Context Without Tool Calls)
-
-AI clients (such as Claude Desktop or Cursor) can attach real-time Tally context directly using MCP Resources:
-
-| URI | Resource Name | What It Provides |
-|---|---|---|
-| `tally://status` | Tally Status | Live connectivity status, loaded company count, queue metrics, and executable detection. |
-| `tally://companies` | Loaded Companies | List of all companies currently open and active in Tally. |
-| `tally://financial-summary` | Financial Summary | Executive KPI snapshot (< 350 tokens) containing Cash, Bank, Receivables, Payables, and Profit in TOON format. |
+| **Financial Statements** | Financial Health Snapshot, Profit & Loss, Balance Sheet, Trial Balance, Day Book |
+| **Parties & Receivables** | 360° Party Overview, Ledger Statements, Bills Receivable & Payable Aging |
+| **Vouchers & Inventory** | Smart Voucher Search (by party, amount, date, or text), Full Voucher Drilldown, Stock Summary |
+| **Documents & Automation** | Multi-page PDF Export (`/files/`), Auto-Launch Tally, Built-in Accounting Rules & Audit Prompts |
 
 ---
 
-## 5. Configuration (`config.yaml`)
+## Frequently Asked Questions
 
-On its first run, `tally-mcp.exe` generates a default `config.yaml` in its folder:
+**Does my accounting data go to any third-party cloud server?**  
+No. Tally MCP runs 100% locally on your Windows PC and communicates only over your local network with the AI client you connect to it.
 
-```yaml
-server:
-  # Network address to listen on ("0.0.0.0:8080" allows connections across your LAN)
-  listen_address: "0.0.0.0:8080"
-  transport: "sse"
-  # Response serialization format for tool queries: "toon" (Token-Oriented Object Notation, default)
-  payload_format: "toon"
+**Can multiple team members use it at the same time?**  
+Yes. Incoming requests are queued and paced automatically so multiple people can query Tally simultaneously without overloading it.
 
-tally:
-  # Address where Tally is running (default port is 9000)
-  url: "http://localhost:9000"
-  timeout_seconds: 30
-  # Target company name (leave empty to use whichever company is open in Tally)
-  default_company: ""
-  # Maximum incoming queries to buffer when Tally is busy
-  max_queue_size: 100
-  # Cooldown throttle in milliseconds between queries (protects Tally from freezing)
-  throttle_ms: 15
-  # In-memory cache duration for ledger and stock names
-  cache_ttl_seconds: 30
-  # Optional path to tally.exe (leave empty to auto-detect standard TallyPrime / Tally ERP 9 folders)
-  exe_path: ""
-  # Automatically launch Tally if not running when an AI request arrives or on server start
-  auto_start: false
+**Can I prevent the AI from editing or creating entries in Tally?**  
+Yes. Set `read_only: true` in `config.yaml` (or launch with `--read-only`) to block all write operations.
 
-auth:
-  # Set to true if you want to require a password/token from AI clients
-  enabled: false
-  # Your secret API key
-  api_key: ""
-
-updater:
-  # GitHub repository for release updates
-  github_repo: "gops/TallyMCP"
-  # Check for updates on startup
-  check_on_startup: true
-
-log:
-  level: "info"
-```
-
-You can also override settings via environment variables:
-- `TALLY_URL`: e.g. `http://localhost:9000`
-- `TALLY_MCP_LISTEN`: e.g. `0.0.0.0:8080`
-- `TALLY_MCP_PAYLOAD_FORMAT`: e.g. `toon` or `compact_json`
-- `TALLY_MCP_API_KEY`: e.g. `your-secret-key`
-
----
-
-## 6. Command-Line Options
-
-While most users interact via the System Tray icon, you can also use CLI flags in PowerShell or Command Prompt:
-
-```cmd
-tally-mcp.exe [flags]
-```
-
-| Flag / Command | Description |
-|---|---|
-| `--no-tray` | Run in headless console mode (ideal for servers or Windows services) |
-| `--config <path>` | Specify a custom path to `config.yaml` |
-| `--check-update` | Check GitHub Releases for available updates and exit |
-| `--update` | Download and apply the latest release binary in-place |
-| `--startup enable` | Register Tally MCP to launch automatically on Windows boot |
-| `--startup disable` | Remove automatic launch on Windows boot |
-| `--startup status` | Check whether autostart is currently enabled |
-| `--firewall allow` | Add Windows Defender Firewall rule for port range `8080-8090` |
-| `--firewall remove` | Remove Tally MCP firewall rule |
-| `--firewall status` | Check if the firewall rule is currently active |
-| `--start-tally` | Launch Tally immediately if stopped, verify connection, and exit |
-| `--auto-start-tally` | Automatically launch Tally if stopped whenever an MCP request arrives |
-| `--tally-path <path>` | Specify custom file path to `tally.exe` |
-| `--version` | Display current version and build information |
-
----
-
-## 7. Troubleshooting & FAQs
-
-### Q: My AI assistant says "Connection refused" or cannot reach the server.
-1. **Check if Tally MCP is running**: Look for the icon in your Windows Notification Area.
-2. **Verify Windows Firewall**: Right-click the tray icon and ensure **🛡️ Allow through Windows Firewall** is checked, or run `tally-mcp.exe --firewall allow`.
-3. **Verify IP Address**: Make sure your AI assistant configuration uses the IP address of the Windows PC running Tally MCP, not `localhost` (unless running on the same PC).
-4. **Port In Use**: If port `8080` was busy, check the tray icon menu to see if it bound to `8081` or another port.
-
-### Q: `tally_status` returns "Tally connection failed".
-1. **Is Tally running?** Make sure Tally ERP 9 or TallyPrime is open on the host PC.
-2. **Is Tally's HTTP Server enabled?** In TallyPrime, press `F1 > Settings > Connectivity` and make sure it is set to `Both` (or `Server`) on Port `9000`.
-3. **Is a Company loaded?** Open at least one company in Tally.
-
-### Q: Can multiple team members connect their AI assistants at the same time?
-Yes! Tally MCP safely serializes incoming requests with an internal queue and cooldown buffer, ensuring multiple AI assistants across your office can query Tally without crashing Tally's engine.
-
----
-
-## Technical Details & Architecture
-
-Interested in internal design, the single-thread query serialization engine, XML/TDL envelopes, token-reduction strategies, or compiling from source?
-
-👉 **Read the full [Architecture & Technical Reference (ARCHITECTURE.md)](./ARCHITECTURE.md)**.
-
----
-
-## Disclaimer
-
-This is AI-generated code and can have errors or mistakes. Use at your own risk. It is provided "as is" without warranty of any kind. Always test queries, actions, and reports against a test or backup Tally environment before deploying or using it with production financial books.
+**What if I want technical specs, CLI flags, or source build instructions?**  
+See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for the full technical reference, `config.yaml` options, CLI flags, XML/TDL architecture, and developer build guide.
 
 ---
 
 ## License
 
-This project is licensed under the [MIT License](./LICENSE) - free for personal, commercial, and enterprise use.
+Free for personal, commercial, and enterprise use under the [MIT License](./LICENSE).

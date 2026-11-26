@@ -126,6 +126,9 @@ func encodeSlice(sb *strings.Builder, key string, slice []any, indentLevel int) 
 				colVal, exists := rowMap[col]
 				if !exists || colVal == nil {
 					rowVals[cIdx] = ""
+				} else if s, ok := colVal.(string); ok && s == "" {
+					// Emit empty cell instead of "" in tabular rows to save 2 chars per empty field.
+					rowVals[cIdx] = ""
 				} else {
 					rowVals[cIdx] = formatPrimitive(colVal)
 				}
@@ -302,6 +305,9 @@ func formatString(s string) string {
 }
 
 func quoteJSONString(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(s)
+	return strings.TrimSuffix(buf.String(), "\n")
 }

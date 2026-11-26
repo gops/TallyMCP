@@ -482,16 +482,13 @@ The MCP server registers the following tools in `internal/mcp/server.go`:
 | `tally_get_financial_summary` | `HandleGetFinancialSummary` | High-level KPI snapshot (Cash, Receivables, Payables, Revenue, Net Profit). |
 | `tally_list_ledgers` | `HandleListLedgers` | Searchable, paginated ledger list with compact mode option. |
 | `tally_get_ledger` | `HandleGetLedger` | Full ledger contact, credit, and balance details. |
+| `tally_get_party_overview` | `HandleGetPartyOverview` | Combined party balance, contact details, and recent vouchers in one call. |
 | `tally_get_ledger_statement` | `HandleGetLedgerStatement` | Detailed transaction statement for any ledger (Date, Voucher Type, No, Contra, Debit, Credit, Narration, Running Balance). |
 | `tally_list_vouchers` | `HandleListVouchers` | Accelerated voucher lookup with server-side TDL pushdown (party, amount, tolerance, search, date range, voucher type). |
 | `tally_get_voucher` | `HandleGetVoucher` | Deep drilldown: ledger legs, inventory quantities, bill allocations, taxes. |
 | `tally_get_stock_summary` | `HandleGetStockSummary` | Paginated stock inventory levels, rates, and valuations. |
-| `tally_get_trial_balance` | `HandleGetTrialBalance` | Real-time debit and credit trial balance. |
-| `tally_get_profit_and_loss` | `HandleGetProfitAndLoss` | P&L statement (Gross Profit, Expenses, Net Profit). |
-| `tally_get_balance_sheet` | `HandleGetBalanceSheet` | Balance Sheet (Liabilities vs Assets, Capital, Loans). |
-| `tally_get_outstanding_receivables` | `HandleGetOutstandingReceivables` | Bills receivable aging schedule. |
-| `tally_get_outstanding_payables` | `HandleGetOutstandingPayables` | Bills payable aging schedule. |
-| `tally_get_daybook` | `HandleGetDaybook` | Daily transaction journal. |
+| `tally_get_report` | `HandleGetReport` | Unified financial report query (Trial Balance, Profit & Loss, Balance Sheet, Day Book). |
+| `tally_get_outstandings` | `HandleGetOutstandings` | Bills receivable and payable aging schedules. |
 | `tally_generate_pdf` | `HandleGeneratePDF` | PDF report and invoice generation. |
 | `tally_execute_xml` | `HandleExecuteXML` | Raw TDL / XML query execution escape hatch. |
 | `tally_create_ledger` | `HandleCreateLedger` | Master ledger creation (auto-invalidates cache). |

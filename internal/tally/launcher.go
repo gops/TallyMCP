@@ -91,7 +91,8 @@ func isLocalURL(rawURL string) bool {
 	return false
 }
 
-// isConnectionRefused returns true if err indicates Tally's HTTP port is not reachable.
+// isConnectionRefused returns true if err indicates Tally's HTTP port is not reachable
+// (as opposed to an established connection timing out on a slow Tally query).
 func isConnectionRefused(err error) bool {
 	if err == nil {
 		return false
@@ -100,10 +101,7 @@ func isConnectionRefused(err error) bool {
 	return strings.Contains(s, "connection refused") ||
 		strings.Contains(s, "no connection could be made") ||
 		strings.Contains(s, "actively refused") ||
-		strings.Contains(s, "connectex") ||
-		strings.Contains(s, "i/o timeout") ||
-		strings.Contains(s, "context deadline exceeded") ||
-		strings.Contains(s, "dial tcp")
+		strings.Contains(s, "connectex")
 }
 
 // ExePath returns the configured Tally executable path.

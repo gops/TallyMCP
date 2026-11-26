@@ -120,22 +120,64 @@ func CleanXMLString(raw string) string {
 	return strings.TrimSpace(raw)
 }
 
-// CheckTallyError inspects raw XML response for Tally error indicators.
+var (
+	reLineErrorTag  = regexp.MustCompile(`(?is)<LINEERROR[^>]*>(.*?)</LINEERROR>`)
+	reExceptionsTag = regexp.MustCompile(`(?is)<EXCEPTIONS[^>]*>(.*?)</EXCEPTIONS>`)
+)
+
+// CheckTallyError inspects raw XML response for Tally error indicators and returns actionable hints.
 func CheckTallyError(raw []byte) error {
 	str := string(raw)
-	if strings.Contains(str, "<LINEERROR>") {
-		// Extract error message
-		start := strings.Index(str, "<LINEERROR>")
-		end := strings.Index(str, "</LINEERROR>")
-		if start != -1 && end != -1 && end > start {
-			errText := str[start+11 : end]
-			return fmt.Errorf("tally line error: %s", strings.TrimSpace(errText))
+
+	var msgs []string
+	for _, m := range reLineErrorTag.FindAllStringSubmatch(str, -1) {
+		if len(m) > 1 {
+			txt := strings.TrimSpace(m[1])
+			if txt != "" {
+				msgs = append(msgs, txt)
+			}
 		}
 	}
+	for _, m := range reExceptionsTag.FindAllStringSubmatch(str, -1) {
+		if len(m) > 1 {
+			txt := strings.TrimSpace(m[1])
+			if txt != "" && txt != "0" {
+				msgs = append(msgs, txt)
+			}
+		}
+	}
+
+	if len(msgs) > 0 {
+		joined := strings.Join(msgs, "; ")
+		hint := inferTallyErrorHint(joined)
+		if hint != "" {
+			return fmt.Errorf("tally error: %s (hint: %s)", joined, hint)
+		}
+		return fmt.Errorf("tally error: %s", joined)
+	}
+
 	if strings.Contains(str, "<STATUS>0</STATUS>") {
-		return fmt.Errorf("tally returned failure status (0)")
+		return fmt.Errorf("tally returned failure status (0); check company selection, date range, or XML request structure")
 	}
 	return nil
+}
+
+func inferTallyErrorHint(errMsg string) string {
+	lower := strings.ToLower(errMsg)
+	switch {
+	case strings.Contains(lower, "company") && (strings.Contains(lower, "not") || strings.Contains(lower, "open") || strings.Contains(lower, "exist")):
+		return "call tally_list_companies to verify loaded company names and pass the exact 'company' parameter"
+	case strings.Contains(lower, "ledger") && strings.Contains(lower, "exist"):
+		return "call tally_list_ledgers with 'search' to find the exact ledger name"
+	case strings.Contains(lower, "group") && strings.Contains(lower, "exist"):
+		return "use a valid Tally parent group such as 'Sundry Debtors', 'Sundry Creditors', 'Bank Accounts', 'Direct Expenses', or 'Indirect Expenses'"
+	case strings.Contains(lower, "date"):
+		return "provide dates in YYYYMMDD or YYYY-MM-DD format within the loaded company's books period"
+	case strings.Contains(lower, "bad formula"):
+		return "verify TDL formula syntax, single '=' equality, and XML entity escaping"
+	default:
+		return ""
+	}
 }
 
 // PrettyJSON converts any Go value to formatted JSON string.
@@ -282,8 +324,8 @@ func ValidateAndSanitizeTallyXML(xmlContent string) (string, error) {
 			if len(fMatch) > 1 {
 				fName := strings.TrimSpace(fMatch[1])
 				fNameLower := strings.ToLower(fName)
-				// If formulas are defined in the XML, the filter must match one of them or be a known TDL system filter
-				if len(definedFormulas) > 0 && !definedFormulas[fNameLower] && !isStandardTDLFilter(fNameLower) {
+				// Every <FILTER> must reference either a defined <SYSTEM TYPE="Formulae"> or a known TDL system filter
+				if !definedFormulas[fNameLower] && !isStandardTDLFilter(fNameLower) {
 					return "", fmt.Errorf("collection specifies <FILTER>%s</FILTER> but no matching <SYSTEM TYPE=\"Formulae\" NAME=\"%s\"> exists in XML; causes Tally to crash with 'Can not understand, bad formula'", fName, fName)
 				}
 			}
@@ -291,5 +333,41 @@ func ValidateAndSanitizeTallyXML(xmlContent string) (string, error) {
 	}
 
 	return cleaned, nil
+}
+
+// ParseImportResult extracts structured import counters from Tally's XML response.
+func ParseImportResult(raw []byte) *ImportResult {
+	var env struct {
+		Response *ImportResult `xml:"RESPONSE"`
+		Body     struct {
+			Data struct {
+				ImportResult *ImportResult `xml:"IMPORTRESULT"`
+			} `xml:"DATA"`
+		} `xml:"BODY"`
+	}
+	// Try direct <RESPONSE> root first, then <ENVELOPE>
+	var direct ImportResult
+	if err := xml.Unmarshal(raw, &direct); err == nil && (direct.Created > 0 || direct.Altered > 0 || direct.Deleted > 0 || direct.Errors > 0 || direct.Exceptions > 0 || direct.LineError != "") {
+		return &direct
+	}
+	if err := xml.Unmarshal(raw, &env); err == nil {
+		if env.Response != nil {
+			return env.Response
+		}
+		if env.Body.Data.ImportResult != nil {
+			return env.Body.Data.ImportResult
+		}
+	}
+	return nil
+}
+
+// IsMutatingXML returns true if an XML envelope appears to modify Tally data (Import / Create / Alter / Delete).
+func IsMutatingXML(xmlContent string) bool {
+	upper := strings.ToUpper(xmlContent)
+	return strings.Contains(upper, "<TALLYREQUEST>IMPORT</TALLYREQUEST>") ||
+		strings.Contains(upper, `ACTION="CREATE"`) ||
+		strings.Contains(upper, `ACTION="ALTER"`) ||
+		strings.Contains(upper, `ACTION="DELETE"`) ||
+		strings.Contains(upper, `ACTION="CANCEL"`)
 }
 

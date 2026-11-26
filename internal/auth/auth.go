@@ -75,12 +75,14 @@ func (m *Middleware) extractToken(r *http.Request) string {
 		return strings.TrimSpace(apiKey)
 	}
 
-	// 3. Query param: ?token=<token> or ?api_key=<token>
-	if qToken := r.URL.Query().Get("token"); qToken != "" {
-		return strings.TrimSpace(qToken)
-	}
-	if qKey := r.URL.Query().Get("api_key"); qKey != "" {
-		return strings.TrimSpace(qKey)
+	// 3. Query param: ?token=<token> or ?api_key=<token> (unless disabled)
+	if !m.cfg.DisableQueryToken {
+		if qToken := r.URL.Query().Get("token"); qToken != "" {
+			return strings.TrimSpace(qToken)
+		}
+		if qKey := r.URL.Query().Get("api_key"); qKey != "" {
+			return strings.TrimSpace(qKey)
+		}
 	}
 
 	return ""

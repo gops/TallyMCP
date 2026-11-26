@@ -17,6 +17,7 @@ import (
 
 	"tally-mcp/internal/config"
 	"tally-mcp/internal/mcp"
+	"tally-mcp/internal/relay"
 	"tally-mcp/internal/tally"
 	"tally-mcp/internal/tray"
 	"tally-mcp/internal/updater"
@@ -53,6 +54,12 @@ func main() {
 	autoStartTallyFlag := flag.Bool("auto-start-tally", false, "Automatically start Tally ERP/Prime if not running")
 	tallyPathFlag := flag.String("tally-path", "", "Path to tally.exe executable (e.g. C:\\Program Files\\TallyPrime\\tally.exe)")
 	startTallyFlag := flag.Bool("start-tally", false, "Start Tally immediately if not running and exit")
+	readOnlyFlag := flag.Bool("read-only", false, "Disable mutating MCP operations (tally_create_ledger and mutating tally_execute_xml)")
+	login1ERPFlag := flag.Bool("1erp-login", false, "Log in to 1erp.work via browser (or with --1erp-token) to enable cloud relay")
+	token1ERPFlag := flag.String("1erp-token", "", "Authenticate to 1erp.work using a device/API token (headless mode)")
+	logout1ERPFlag := flag.Bool("1erp-logout", false, "Log out from 1erp.work and remove saved relay credentials")
+	status1ERPFlag := flag.Bool("1erp-status", false, "Show 1erp.work login and relay configuration status")
+	url1ERPFlag := flag.String("1erp-url", "", "Override 1erp.work server URL (default https://1erp.work)")
 
 	flag.Parse()
 
@@ -161,6 +168,64 @@ func main() {
 	}
 	if *tallyPathFlag != "" {
 		cfg.Tally.ExePath = *tallyPathFlag
+	}
+	if *readOnlyFlag {
+		cfg.Server.ReadOnly = true
+	}
+	if *url1ERPFlag != "" {
+		cfg.Relay.ServerURL = strings.TrimRight(*url1ERPFlag, "/")
+	}
+
+	// Handle 1erp.work login / logout / status flags
+	if *login1ERPFlag {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		var (
+			creds *relay.Credentials
+			err   error
+		)
+		if *token1ERPFlag != "" {
+			fmt.Printf("Verifying token with %s...\n", cfg.Relay.ServerURL)
+			creds, err = relay.LoginWithToken(ctx, cfg.Relay.ServerURL, *token1ERPFlag, cfg.Relay.CredentialsFile)
+		} else {
+			fmt.Printf("Opening browser to log in to %s...\n", cfg.Relay.ServerURL)
+			creds, err = relay.LoginWithBrowser(ctx, cfg.Relay.ServerURL, cfg.Relay.CredentialsFile)
+		}
+		if err != nil {
+			log.Fatalf("[ERROR] 1erp.work login failed: %v", err)
+		}
+		fmt.Printf("Logged in to 1erp.work successfully!\n")
+		fmt.Printf("  Account:   %s\n", creds.UserEmail)
+		fmt.Printf("  Tenant ID: %s\n", creds.TenantID)
+		fmt.Printf("  Device ID: %s (%s)\n", creds.DeviceID, creds.DeviceName)
+		fmt.Printf("  Relay:     %s (read_only=%v)\n", creds.ServerURL, !cfg.Relay.AllowWrites)
+		return
+	}
+
+	if *logout1ERPFlag {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := relay.Logout(ctx, cfg.Relay.CredentialsFile); err != nil {
+			log.Fatalf("[ERROR] 1erp.work logout failed: %v", err)
+		}
+		fmt.Println("Logged out from 1erp.work. Local relay credentials removed.")
+		return
+	}
+
+	if *status1ERPFlag {
+		creds, err := relay.LoadCredentials(cfg.Relay.CredentialsFile)
+		if err != nil {
+			fmt.Printf("1erp.work Status: Not logged in (%v)\n", err)
+			fmt.Println("Run with --1erp-login to authenticate and enable the 1erp.work relay.")
+			return
+		}
+		fmt.Printf("1erp.work Status: Logged in\n")
+		fmt.Printf("  Account:      %s\n", creds.UserEmail)
+		fmt.Printf("  Tenant ID:    %s\n", creds.TenantID)
+		fmt.Printf("  Device ID:    %s (%s)\n", creds.DeviceID, creds.DeviceName)
+		fmt.Printf("  Server URL:   %s\n", creds.ServerURL)
+		fmt.Printf("  Relay Active: %v (allow_writes=%v)\n", cfg.Relay.Enabled, cfg.Relay.AllowWrites)
+		return
 	}
 
 	// Handle start-tally flag
@@ -333,6 +398,17 @@ func main() {
 	// Step 7: Handle OS signals for graceful shutdown
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// Step 7b: Start 1erp.work outbound relay if enabled (only connects when logged in)
+	if cfg.Relay.Enabled {
+		allowRelayWrites := cfg.Relay.AllowWrites && !cfg.Server.ReadOnly
+		relayClient := relay.NewClient(cfg.Relay.CredentialsFile, allowRelayWrites, Version, srv.ServeRelayMCP)
+		go func() {
+			if err := relayClient.Run(ctx); err != nil {
+				log.Printf("[WARN] 1ERP Relay stopped: %v", err)
+			}
+		}()
+	}
 
 	serverErrChan := make(chan error, 1)
 	go func() {

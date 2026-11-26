@@ -88,3 +88,34 @@ func TestConfigLoadAndEnvOverrides(t *testing.T) {
 	}
 	_ = cfg
 }
+
+func TestConfigZeroValuesAndSecurityFlags(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := config.WriteDefaultConfigFile(configPath); err != nil {
+		t.Fatalf("failed to write default config: %v", err)
+	}
+
+	t.Setenv("TALLY_THROTTLE_MS", "0")
+	t.Setenv("TALLY_CACHE_TTL_SECONDS", "0")
+	t.Setenv("TALLY_MCP_READ_ONLY", "true")
+	t.Setenv("TALLY_MCP_DISABLE_QUERY_TOKEN", "true")
+
+	cfg, _, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Tally.ThrottleMs != 0 || !cfg.Tally.DisableThrottle {
+		t.Errorf("expected ThrottleMs=0 and DisableThrottle=true, got %d / %v", cfg.Tally.ThrottleMs, cfg.Tally.DisableThrottle)
+	}
+	if cfg.Tally.CacheTTLSeconds != 0 || !cfg.Tally.DisableCache {
+		t.Errorf("expected CacheTTLSeconds=0 and DisableCache=true, got %d / %v", cfg.Tally.CacheTTLSeconds, cfg.Tally.DisableCache)
+	}
+	if !cfg.Server.ReadOnly {
+		t.Errorf("expected Server.ReadOnly=true")
+	}
+	if !cfg.Auth.DisableQueryToken {
+		t.Errorf("expected Auth.DisableQueryToken=true")
+	}
+}

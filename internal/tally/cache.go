@@ -1,6 +1,7 @@
 package tally
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"time"
@@ -15,8 +16,8 @@ type cacheItem struct {
 // It allows instant (< 1ms) responses for static/infrequent master data (companies, ledgers, stock items),
 // bypassing the single-threaded Tally query queue on cache hits.
 type MemoryCache struct {
-	mu      sync.RWMutex
-	items   map[string]cacheItem
+	mu         sync.RWMutex
+	items      map[string]cacheItem
 	defaultTTL time.Duration
 }
 
@@ -37,9 +38,9 @@ func (c *MemoryCache) Get(key string) (any, bool) {
 		return nil, false
 	}
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	item, exists := c.items[key]
+	c.mu.RUnlock()
+
 	if !exists || time.Now().After(item.expiresAt) {
 		return nil, false
 	}
@@ -54,7 +55,7 @@ func (c *MemoryCache) Set(key string, val any) {
 	c.SetWithTTL(key, val, c.defaultTTL)
 }
 
-// SetWithTTL stores a value with an explicit TTL duration.
+// SetWithTTL stores a value with an explicit TTL duration and lazily prunes expired entries.
 func (c *MemoryCache) SetWithTTL(key string, val any, ttl time.Duration) {
 	if c == nil {
 		return
@@ -63,12 +64,21 @@ func (c *MemoryCache) SetWithTTL(key string, val any, ttl time.Duration) {
 		ttl = c.defaultTTL
 	}
 
+	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if len(c.items) > 64 {
+		for k, item := range c.items {
+			if now.After(item.expiresAt) {
+				delete(c.items, k)
+			}
+		}
+	}
+
 	c.items[key] = cacheItem{
 		value:     val,
-		expiresAt: time.Now().Add(ttl),
+		expiresAt: now.Add(ttl),
 	}
 }
 
@@ -100,4 +110,60 @@ func (c *MemoryCache) Size() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.items)
+}
+
+type flightCall struct {
+	done chan struct{}
+	val  any
+	err  error
+}
+
+// Singleflight coalesces concurrent identical cache-miss fetches so Tally's single-threaded
+// XML server is only queried once for concurrent identical requests.
+type Singleflight struct {
+	mu    sync.Mutex
+	calls map[string]*flightCall
+}
+
+// Do executes fn once per in-flight key, sharing its result across concurrent callers
+// while still honoring individual caller context cancellation.
+func (g *Singleflight) Do(ctx context.Context, key string, fn func(context.Context) (any, error)) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	g.mu.Lock()
+	if g.calls == nil {
+		g.calls = make(map[string]*flightCall)
+	}
+	if call, ok := g.calls[key]; ok {
+		g.mu.Unlock()
+		select {
+		case <-call.done:
+			return call.val, call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	call := &flightCall{done: make(chan struct{})}
+	g.calls[key] = call
+	g.mu.Unlock()
+
+	go func() {
+		defer func() {
+			g.mu.Lock()
+			delete(g.calls, key)
+			g.mu.Unlock()
+			close(call.done)
+		}()
+		call.val, call.err = fn(context.WithoutCancel(ctx))
+	}()
+
+	select {
+	case <-call.done:
+		return call.val, call.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
