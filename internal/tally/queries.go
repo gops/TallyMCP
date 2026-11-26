@@ -751,7 +751,7 @@ const createVoucherTemplate = `<ENVELOPE>
       </REQUESTDESC>
       <REQUESTDATA>
         <TALLYMESSAGE xmlns:UDF="TallyUDF">
-          <VOUCHER VCHTYPE="{{.VoucherTypeAttr}}" ACTION="Create" OBJVIEW="Accounting Voucher View">
+          <VOUCHER VCHTYPE="{{.VoucherTypeAttr}}" ACTION="Create" OBJVIEW="{{.ObjView}}">
             <DATE>{{.Date}}</DATE>
             <VOUCHERTYPENAME>{{.VoucherType}}</VOUCHERTYPENAME>
             {{if .VoucherNumber}}<VOUCHERNUMBER>{{.VoucherNumber}}</VOUCHERNUMBER>{{end}}
@@ -763,7 +763,33 @@ const createVoucherTemplate = `<ENVELOPE>
               <LEDGERNAME>{{.LedgerName}}</LEDGERNAME>
               <ISDEEMEDPOSITIVE>{{.IsDeemedPositive}}</ISDEEMEDPOSITIVE>
               <AMOUNT>{{printf "%.2f" .Amount}}</AMOUNT>
+              {{range .BillAllocations}}
+              <BILLALLOCATIONS.LIST>
+                <NAME>{{.Name}}</NAME>
+                <BILLTYPE>{{.BillType}}</BILLTYPE>
+                <AMOUNT>{{printf "%.2f" .Amount}}</AMOUNT>
+              </BILLALLOCATIONS.LIST>
+              {{end}}
             </ALLLEDGERENTRIES.LIST>
+            {{end}}
+            {{range .InventoryEntries}}
+            <ALLINVENTORYENTRIES.LIST>
+              <STOCKITEMNAME>{{.StockItemName}}</STOCKITEMNAME>
+              <ISDEEMEDPOSITIVE>{{.IsDeemedPositive}}</ISDEEMEDPOSITIVE>
+              {{if .Rate}}<RATE>{{.Rate}}</RATE>{{end}}
+              <AMOUNT>{{printf "%.2f" .Amount}}</AMOUNT>
+              {{if .ActualQty}}<ACTUALQTY>{{.ActualQty}}</ACTUALQTY>{{end}}
+              {{if .BilledQty}}<BILLEDQTY>{{.BilledQty}}</BILLEDQTY>{{end}}
+              {{if or .GodownName .BatchName}}
+              <BATCHALLOCATIONS.LIST>
+                {{if .GodownName}}<GODOWNNAME>{{.GodownName}}</GODOWNNAME>{{end}}
+                {{if .BatchName}}<BATCHNAME>{{.BatchName}}</BATCHNAME>{{end}}
+                <AMOUNT>{{printf "%.2f" .Amount}}</AMOUNT>
+                {{if .ActualQty}}<ACTUALQTY>{{.ActualQty}}</ACTUALQTY>{{end}}
+                {{if .BilledQty}}<BILLEDQTY>{{.BilledQty}}</BILLEDQTY>{{end}}
+              </BATCHALLOCATIONS.LIST>
+              {{end}}
+            </ALLINVENTORYENTRIES.LIST>
             {{end}}
           </VOUCHER>
         </TALLYMESSAGE>
@@ -773,7 +799,7 @@ const createVoucherTemplate = `<ENVELOPE>
 </ENVELOPE>`
 
 // BuildCreateVoucherXML generates the XML import envelope for creating a voucher in Tally.
-func BuildCreateVoucherXML(company, voucherType, date, voucherNumber, reference, partyLedger, narration string, entries []VoucherEntryInput) (string, error) {
+func BuildCreateVoucherXML(company, voucherType, date, voucherNumber, reference, partyLedger, narration string, entries []VoucherEntryInput, inventoryEntries []InventoryEntryInput) (string, error) {
 	cleanType := SanitizeTDLString(voucherType)
 	if cleanType == "" {
 		return "", fmt.Errorf("voucher_type cannot be empty")
@@ -786,30 +812,76 @@ func BuildCreateVoucherXML(company, voucherType, date, voucherNumber, reference,
 		return "", fmt.Errorf("at least 2 ledger entries are required")
 	}
 
+	type xmlBill struct {
+		Name     string
+		BillType string
+		Amount   float64
+	}
 	type xmlEntry struct {
 		LedgerName       string
 		IsDeemedPositive string
 		Amount           float64
+		BillAllocations  []xmlBill
 	}
 	escapedEntries := make([]xmlEntry, 0, len(entries))
 	for _, e := range entries {
+		var bills []xmlBill
+		for _, b := range e.BillAllocations {
+			bills = append(bills, xmlBill{
+				Name:     XMLEscapeText(SanitizeTDLString(b.Name)),
+				BillType: XMLEscapeText(SanitizeTDLString(b.BillType)),
+				Amount:   b.Amount,
+			})
+		}
 		escapedEntries = append(escapedEntries, xmlEntry{
 			LedgerName:       XMLEscapeText(SanitizeTDLString(e.LedgerName)),
 			IsDeemedPositive: e.IsDeemedPositive,
 			Amount:           e.Amount,
+			BillAllocations:  bills,
 		})
 	}
 
+	type xmlInv struct {
+		StockItemName    string
+		IsDeemedPositive string
+		Rate             string
+		BilledQty        string
+		ActualQty        string
+		Amount           float64
+		GodownName       string
+		BatchName        string
+	}
+	escapedInv := make([]xmlInv, 0, len(inventoryEntries))
+	for _, inv := range inventoryEntries {
+		escapedInv = append(escapedInv, xmlInv{
+			StockItemName:    XMLEscapeText(SanitizeTDLString(inv.StockItemName)),
+			IsDeemedPositive: inv.IsDeemedPositive,
+			Rate:             XMLEscapeText(SanitizeTDLString(inv.Rate)),
+			BilledQty:        XMLEscapeText(SanitizeTDLString(inv.BilledQty)),
+			ActualQty:        XMLEscapeText(SanitizeTDLString(inv.ActualQty)),
+			Amount:           inv.Amount,
+			GodownName:       XMLEscapeText(SanitizeTDLString(inv.GodownName)),
+			BatchName:        XMLEscapeText(SanitizeTDLString(inv.BatchName)),
+		})
+	}
+
+	objView := "Accounting Voucher View"
+	if len(escapedInv) > 0 {
+		objView = "Invoice Voucher View"
+	}
+
 	return executeTemplate("createVoucher", createVoucherTemplate, map[string]any{
-		"Company":         XMLEscapeText(company),
-		"VoucherTypeAttr": XMLEscapeAttr(cleanType),
-		"VoucherType":     XMLEscapeText(cleanType),
-		"Date":            cleanDate,
-		"VoucherNumber":   XMLEscapeText(SanitizeTDLString(voucherNumber)),
-		"Reference":       XMLEscapeText(SanitizeTDLString(reference)),
-		"PartyLedger":     XMLEscapeText(SanitizeTDLString(partyLedger)),
-		"Narration":       XMLEscapeText(SanitizeTDLString(narration)),
-		"Entries":         escapedEntries,
+		"Company":          XMLEscapeText(company),
+		"VoucherTypeAttr":  XMLEscapeAttr(cleanType),
+		"VoucherType":      XMLEscapeText(cleanType),
+		"ObjView":          objView,
+		"Date":             cleanDate,
+		"VoucherNumber":    XMLEscapeText(SanitizeTDLString(voucherNumber)),
+		"Reference":        XMLEscapeText(SanitizeTDLString(reference)),
+		"PartyLedger":      XMLEscapeText(SanitizeTDLString(partyLedger)),
+		"Narration":        XMLEscapeText(SanitizeTDLString(narration)),
+		"Entries":          escapedEntries,
+		"InventoryEntries": escapedInv,
 	})
 }
 

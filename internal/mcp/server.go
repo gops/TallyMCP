@@ -59,9 +59,11 @@ func (s *Server) ServeRelayMCP(ctx context.Context, rawJSON []byte, allowWrites 
 }
 
 const mcpServerInstructions = `TallyMCP connects to Tally ERP 9 / TallyPrime (responses use compact TOON format by default).
+- Priority: Error-free, bug-free, and token-efficient execution. Never guess names or numbers; verify with tools and keep payloads compact (summary_only=true, fields='...').
 - Skip tally_status/tally_list_companies warmup; call domain tools directly (or read tally://context).
 - Tally sign convention: negative (-) = Debit (assets/receivables/expenses), positive (+) = Credit (liabilities/payables/income).
-- Fast shortcuts: tally_get_financial_summary (KPIs + compare_to), tally_get_party_overview (customer/vendor 360 in 1 call), tally_get_ledger(names="A,B,C") (batch lookup), tally_list_vouchers(aggregate_only=true) (counts/totals), tally_get_outstandings (unpaid bills with sort/overdue_only).
+- Fast 1-call shortcuts: tally_get_financial_summary (+ compare_to), tally_get_party_overview, tally_get_ledger(names="A,B,C"), tally_get_gst_summary, tally_get_bank_recon, tally_get_sales_analytics, tally_list_vouchers(aggregate_only=true), tally_get_outstandings.
+- Safe writes: Always dry-run tally_create_voucher with preview=true (default) before posting with preview=false.
 - Dates accept YYYYMMDD, YYYY-MM-DD, DD-MM-YYYY, or keywords: today, yesterday, this_month, last_month, this_fy, last_fy, last_7d, last_30d, q1, q2, q3, q4.`
 
 // NewServer initializes a new MCP Server with all tools registered.
@@ -372,8 +374,10 @@ func (s *Server) registerTools() {
 				mcp.WithString("voucher_number", mcp.Description("Optional voucher number")),
 				mcp.WithString("reference", mcp.Description("Optional reference / supplier invoice number")),
 				mcp.WithString("narration", mcp.Description("Optional narration")),
-				mcp.WithArray("entries", mcp.Required(), mcp.Description("Array of {ledger_name, amount, is_debit} objects (must balance: total debit == total credit)")),
-				mcp.WithBoolean("preview", mcp.Description("Dry-run validate & resolve ledgers without posting (default true; pass false to post)")),
+				mcp.WithArray("entries", mcp.Required(), mcp.Description("Array of {ledger_name, amount, is_debit, bill_allocations:[{name, bill_type, amount}]} objects (must balance: total debit == total credit)")),
+				mcp.WithArray("inventory_entries", mcp.Description("Optional array of {stock_item_name, billed_qty, rate, amount, godown_name, batch_name} for item-invoice vouchers")),
+				mcp.WithBoolean("preview", mcp.Description("Dry-run validate, check duplicates & resolve ledgers without posting (default true; pass false to post)")),
+				mcp.WithBoolean("allow_duplicate", mcp.Description("Allow posting even if a matching voucher_number or reference+party+date already exists (default false)")),
 			),
 			s.handlers.HandleCreateVoucher,
 		)

@@ -596,18 +596,29 @@ func TestWorkflowTools_VoucherGSTBankReconAnalytics(t *testing.T) {
 	handlers := mcppkg.NewToolHandlers(tallyClient, "v1.0.21", "gops/TallyMCP", "json")
 	ctx := context.Background()
 
-	// 1. tally_create_voucher preview=true (default) validates & resolves ledgers without posting
+	// 1. tally_create_voucher preview=true (default) validates & resolves ledgers, bill_allocations, and inventory_entries without posting
 	vRes, err := handlers.HandleCreateVoucher(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name: "tally_create_voucher",
 			Arguments: map[string]any{
-				"voucher_type": "Sales",
-				"date":         "2026-11-25",
+				"voucher_type":   "Sales",
+				"date":           "2026-11-10",
+				"voucher_number": "S-1", // matches existing S-1 on 20261110 -> triggers duplicate_warning in preview!
 				"entries": []map[string]any{
-					{"ledger_name": "Acme Corp", "amount": 11800, "is_debit": true},
+					{
+						"ledger_name": "Acme Corp",
+						"amount":      11800,
+						"is_debit":    true,
+						"bill_allocations": []map[string]any{
+							{"name": "S-1", "bill_type": "New Ref", "amount": 11800},
+						},
+					},
 					{"ledger_name": "Sales Account", "amount": 10000, "is_debit": false},
 					{"ledger_name": "CGST", "amount": 900, "is_debit": false},
 					{"ledger_name": "SGST", "amount": 900, "is_debit": false},
+				},
+				"inventory_entries": []map[string]any{
+					{"stock_item_name": "Widget Pro", "billed_qty": "10 Nos", "rate": "1000/Nos", "amount": 10000},
 				},
 			},
 		},
@@ -616,8 +627,28 @@ func TestWorkflowTools_VoucherGSTBankReconAnalytics(t *testing.T) {
 		t.Fatalf("HandleCreateVoucher preview failed: err=%v res=%+v", err, vRes)
 	}
 	vTxt := vRes.Content[0].(mcp.TextContent).Text
-	if !strings.Contains(vTxt, `"status":"preview"`) || !strings.Contains(vTxt, `"valid":true`) {
-		t.Errorf("expected preview=true valid=true response, got: %s", vTxt)
+	if !strings.Contains(vTxt, `"status":"preview"`) || !strings.Contains(vTxt, `"valid":true`) || !strings.Contains(vTxt, `"duplicate_warning"`) || !strings.Contains(vTxt, `"Widget Pro"`) {
+		t.Errorf("expected preview=true valid=true with duplicate_warning and Widget Pro, got: %s", vTxt)
+	}
+
+	// 1b. preview=false with duplicate voucher_number must be blocked unless allow_duplicate=true
+	dupRes, err := handlers.HandleCreateVoucher(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name: "tally_create_voucher",
+			Arguments: map[string]any{
+				"voucher_type":   "Sales",
+				"date":           "2026-11-10",
+				"voucher_number": "S-1",
+				"preview":        false,
+				"entries": []map[string]any{
+					{"ledger_name": "Acme Corp", "amount": 11800, "is_debit": true},
+					{"ledger_name": "Sales Account", "amount": 11800, "is_debit": false},
+				},
+			},
+		},
+	})
+	if err != nil || !dupRes.IsError || !strings.Contains(dupRes.Content[0].(mcp.TextContent).Text, "duplicate") {
+		t.Errorf("expected duplicate voucher error when preview=false, got err=%v res=%+v", err, dupRes)
 	}
 
 	// 2. unbalanced voucher must fail

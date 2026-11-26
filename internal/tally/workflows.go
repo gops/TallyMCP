@@ -9,12 +9,13 @@ import (
 	"time"
 )
 
-// CreateVoucherForCompany validates, resolves ledgers, and either previews or imports a voucher into Tally.
+// CreateVoucherForCompany validates, resolves ledgers, checks for duplicates, and either previews or imports a voucher into Tally.
 func (c *Client) CreateVoucherForCompany(
 	ctx context.Context,
 	company, voucherType, date, voucherNumber, reference, partyLedger, narration string,
 	rawEntries []VoucherEntryInput,
-	preview bool,
+	rawInventory []InventoryEntryInput,
+	preview, allowDuplicate bool,
 ) (*CreateVoucherResult, error) {
 	vType := NormalizeVoucherTypeAlias(voucherType)
 	if vType == "" {
@@ -61,12 +62,37 @@ func (c *Client) CreateVoucherForCompany(
 			totalCredit += absAmt
 		}
 
+		var resolvedBills []BillAllocationInput
+		for bi, b := range e.BillAllocations {
+			bName := strings.TrimSpace(b.Name)
+			if bName == "" {
+				return nil, fmt.Errorf("entry[%d].bill_allocations[%d] name cannot be empty", i, bi)
+			}
+			if b.Amount == 0 {
+				return nil, fmt.Errorf("entry[%d].bill_allocations[%d] (%s) amount cannot be 0", i, bi, bName)
+			}
+			bType := strings.TrimSpace(b.BillType)
+			if bType == "" {
+				bType = "New Ref"
+			}
+			bSigned := math.Abs(b.Amount)
+			if isDebit {
+				bSigned = -bSigned
+			}
+			resolvedBills = append(resolvedBills, BillAllocationInput{
+				Name:     bName,
+				BillType: bType,
+				Amount:   math.Round(bSigned*100) / 100,
+			})
+		}
+
 		resolvedEntries = append(resolvedEntries, VoucherEntryInput{
 			LedgerName:       resolvedName,
 			ResolvedFrom:     correctedFrom,
 			Amount:           math.Round(signedAmt*100) / 100,
 			IsDebit:          isDebit,
 			IsDeemedPositive: deemedPos,
+			BillAllocations:  resolvedBills,
 		})
 	}
 
@@ -74,6 +100,43 @@ func (c *Client) CreateVoucherForCompany(
 	totalCredit = math.Round(totalCredit*100) / 100
 	if math.Abs(totalDebit-totalCredit) > 0.01 {
 		return nil, fmt.Errorf("voucher is unbalanced: total_debit=%.2f != total_credit=%.2f (difference=%.2f)", totalDebit, totalCredit, math.Abs(totalDebit-totalCredit))
+	}
+
+	resolvedInv := make([]InventoryEntryInput, 0, len(rawInventory))
+	for i, inv := range rawInventory {
+		itemName := strings.TrimSpace(inv.StockItemName)
+		if itemName == "" {
+			return nil, fmt.Errorf("inventory_entries[%d] stock_item_name cannot be empty", i)
+		}
+		if inv.Amount == 0 {
+			return nil, fmt.Errorf("inventory_entries[%d] (%s) amount cannot be 0", i, itemName)
+		}
+		isDebit := inv.IsDebit || inv.Amount < 0
+		if !inv.IsDebit && inv.Amount > 0 && strings.EqualFold(vType, "Purchase") {
+			isDebit = true
+		}
+		signedAmt := math.Abs(inv.Amount)
+		deemedPos := "No"
+		if isDebit {
+			signedAmt = -signedAmt
+			deemedPos = "Yes"
+		}
+		actualQty := strings.TrimSpace(inv.ActualQty)
+		billedQty := strings.TrimSpace(inv.BilledQty)
+		if actualQty == "" {
+			actualQty = billedQty
+		}
+		resolvedInv = append(resolvedInv, InventoryEntryInput{
+			StockItemName:    itemName,
+			Rate:             strings.TrimSpace(inv.Rate),
+			BilledQty:        billedQty,
+			ActualQty:        actualQty,
+			Amount:           math.Round(signedAmt*100) / 100,
+			IsDebit:          isDebit,
+			IsDeemedPositive: deemedPos,
+			GodownName:       strings.TrimSpace(inv.GodownName),
+			BatchName:        strings.TrimSpace(inv.BatchName),
+		})
 	}
 
 	resolvedParty := strings.TrimSpace(partyLedger)
@@ -87,24 +150,54 @@ func (c *Client) CreateVoucherForCompany(
 		resolvedParty = resolvedEntries[0].LedgerName
 	}
 
-	xmlPayload, err := BuildCreateVoucherXML(company, vType, cleanDate, voucherNumber, reference, resolvedParty, narration, resolvedEntries)
+	var duplicateMsg string
+	vNum := strings.TrimSpace(voucherNumber)
+	ref := strings.TrimSpace(reference)
+	if !allowDuplicate && (vNum != "" || ref != "") {
+		existing, fErr := c.FilterVouchers(ctx, VoucherFilterOptions{
+			Company:     company,
+			VoucherType: vType,
+			FromDate:    cleanDate,
+			ToDate:      cleanDate,
+		})
+		if fErr == nil {
+			for _, ex := range existing {
+				if vNum != "" && strings.EqualFold(strings.TrimSpace(ex.VoucherNumber), vNum) {
+					duplicateMsg = fmt.Sprintf("duplicate %s voucher detected: voucher_number=%q already exists on %s (party=%q)", vType, ex.VoucherNumber, cleanDate, ex.PartyLedgerName)
+					break
+				}
+				if ref != "" && strings.EqualFold(strings.TrimSpace(ex.Reference), ref) && strings.EqualFold(strings.TrimSpace(ex.PartyLedgerName), resolvedParty) {
+					duplicateMsg = fmt.Sprintf("duplicate %s voucher detected: reference=%q for party=%q already exists on %s", vType, ex.Reference, resolvedParty, cleanDate)
+					break
+				}
+			}
+		}
+	}
+
+	if duplicateMsg != "" && !preview {
+		return nil, fmt.Errorf("%s (pass allow_duplicate=true to override)", duplicateMsg)
+	}
+
+	xmlPayload, err := BuildCreateVoucherXML(company, vType, cleanDate, vNum, ref, resolvedParty, narration, resolvedEntries, resolvedInv)
 	if err != nil {
 		return nil, err
 	}
 
 	result := &CreateVoucherResult{
-		Status:        "preview",
-		Valid:         true,
-		Company:       company,
-		VoucherType:   vType,
-		Date:          cleanDate,
-		VoucherNumber: voucherNumber,
-		Reference:     reference,
-		PartyLedger:   resolvedParty,
-		Narration:     narration,
-		TotalDebit:    totalDebit,
-		TotalCredit:   totalCredit,
-		Entries:       resolvedEntries,
+		Status:           "preview",
+		Valid:            true,
+		Company:          company,
+		VoucherType:      vType,
+		Date:             cleanDate,
+		VoucherNumber:    vNum,
+		Reference:        ref,
+		PartyLedger:      resolvedParty,
+		Narration:        narration,
+		TotalDebit:       totalDebit,
+		TotalCredit:      totalCredit,
+		Entries:          resolvedEntries,
+		InventoryEntries: resolvedInv,
+		DuplicateWarning: duplicateMsg,
 	}
 
 	if preview {

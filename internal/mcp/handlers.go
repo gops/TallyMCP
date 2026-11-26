@@ -1502,6 +1502,28 @@ func (h *ToolHandlers) HandleCreateVoucher(ctx context.Context, req mcp.CallTool
 		}
 	}
 
+	var inventoryEntries []tally.InventoryEntryInput
+	if rawInvVal, hasInv := args["inventory_entries"]; hasInv && rawInvVal != nil {
+		switch v := rawInvVal.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				if uErr := json.Unmarshal([]byte(v), &inventoryEntries); uErr != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("Invalid JSON in 'inventory_entries': %v", uErr)), nil
+				}
+			}
+		default:
+			b, mErr := json.Marshal(v)
+			if mErr != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("Invalid 'inventory_entries' format: %v", mErr)), nil
+			}
+			if uErr := json.Unmarshal(b, &inventoryEntries); uErr != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("Invalid 'inventory_entries' structure: %v", uErr)), nil
+			}
+		}
+	}
+
+	allowDuplicate := getBoolDefault(req, "allow_duplicate", false)
+
 	res, err := h.tallyClient.CreateVoucherForCompany(
 		ctx,
 		company,
@@ -1512,7 +1534,9 @@ func (h *ToolHandlers) HandleCreateVoucher(ctx context.Context, req mcp.CallTool
 		req.GetString("party_ledger", ""),
 		req.GetString("narration", ""),
 		entries,
+		inventoryEntries,
 		preview,
+		allowDuplicate,
 	)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Voucher %s failed: %v", map[bool]string{true: "preview", false: "creation"}[preview], err)), nil
@@ -1790,12 +1814,18 @@ You are connected to an active Tally ERP 9 / TallyPrime accounting system via Ta
 - Values with commas or special characters are safely double-quoted.
 - Read tabular lines by mapping comma-separated fields directly to the header column names.
 
-## 3. Best Practices for Calling Tools
-- **Date Scoping**: For tally_list_vouchers, providing a recent from_date (e.g. current month or FY) significantly reduces query latency. If omitted, queries safely default to the current Financial Year start. To search historical years, explicitly specify from_date.
-- **Aggregations**: For totals or counts (e.g. total sales or receipt count), pass aggregate_only: true (with optional group_by) to tally_list_vouchers instead of paging through all rows.
-- **Finding Names**: If an exact customer or vendor name is unknown, use tally_list_ledgers with search='<substring>' first rather than guessing exact ledger names.
-- **Compact Data**: summary_only defaults to true on list tools and ledger statements; pass summary_only: false or fields='...' only when additional fields are needed.
-- **High-Level KPIs**: Call tally_get_financial_summary to answer executive questions about Cash, Bank, Receivables, Payables, and Net Profit in minimal tokens.`
+## 3. Execution Priorities: Error-Free, Bug-Free & Token-Efficient
+- **Prioritize accuracy & zero retries**: Never guess ledger names, dates, or balances. Rely on TallyMCP's fuzzy ledger resolution ('ResolveLedgerName'), relative date keywords ('today', 'this_month', 'last_month', 'this_fy', 'last_fy', 'q1'–'q4'), and 'tally://context'.
+- **1-Call Composite Tools First (Minimum Turns & Tokens)**:
+  - Executive KPIs -> tally_get_financial_summary (supports compare_to)
+  - Customer/Vendor 360 -> tally_get_party_overview
+  - Batch balances -> tally_get_ledger(names="A,B,C")
+  - GST compliance -> tally_get_gst_summary
+  - Bank reconciliation -> tally_get_bank_recon
+  - Sales/Purchase rankings -> tally_get_sales_analytics
+  - Counts/Totals -> tally_list_vouchers(aggregate_only=true)
+- **Safe Write Workflow**: Always call tally_create_voucher with preview=true (default) first to verify resolved ledgers, bill allocations, inventory lines, Dr=Cr balance, and duplicate checks before posting with preview=false.
+- **Token Discipline**: Keep summary_only: true, use fields='...' projection when only specific columns are needed, and pass bounded from_date/to_date and limit so responses stay well under the 16 KB output cap.`
 
 	return &mcp.GetPromptResult{
 		Description: "Essential accounting rules, Indian GAAP & Tally terminology (Sundry Debtors, Creditors, Contra, FY), and TOON format guide for AI agents.",

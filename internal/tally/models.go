@@ -447,30 +447,53 @@ type ServerStatus struct {
 	Error          string        `json:"error,omitempty"`
 }
 
+// BillAllocationInput represents a bill-by-bill reference (Agst Ref, New Ref, Advance, On Account) on a voucher entry.
+type BillAllocationInput struct {
+	Name     string  `json:"name"`
+	BillType string  `json:"bill_type,omitempty"` // "Agst Ref", "New Ref", "Advance", "On Account"
+	Amount   float64 `json:"amount"`
+}
+
+// InventoryEntryInput represents a stock line item when creating/previewing an invoice voucher.
+type InventoryEntryInput struct {
+	StockItemName    string  `json:"stock_item_name"`
+	Rate             string  `json:"rate,omitempty"`
+	BilledQty        string  `json:"billed_qty,omitempty"`
+	ActualQty        string  `json:"actual_qty,omitempty"`
+	Amount           float64 `json:"amount"`
+	IsDebit          bool    `json:"is_debit,omitempty"`
+	IsDeemedPositive string  `json:"-"`
+	GodownName       string  `json:"godown_name,omitempty"`
+	BatchName        string  `json:"batch_name,omitempty"`
+}
+
 // VoucherEntryInput represents one ledger leg when creating/previewing a voucher.
 type VoucherEntryInput struct {
-	LedgerName       string  `json:"ledger_name"`
-	ResolvedFrom     string  `json:"resolved_from,omitempty"`
-	Amount           float64 `json:"amount"` // Tally sign: negative=Debit, positive=Credit
-	IsDebit          bool    `json:"is_debit"`
-	IsDeemedPositive string  `json:"-"`
+	LedgerName       string                `json:"ledger_name"`
+	ResolvedFrom     string                `json:"resolved_from,omitempty"`
+	Amount           float64               `json:"amount"` // Tally sign: negative=Debit, positive=Credit
+	IsDebit          bool                  `json:"is_debit"`
+	IsDeemedPositive string                `json:"-"`
+	BillAllocations  []BillAllocationInput `json:"bill_allocations,omitempty"`
 }
 
 // CreateVoucherResult represents the preview or creation result of tally_create_voucher.
 type CreateVoucherResult struct {
-	Status        string              `json:"status"` // "preview" or "created"
-	Valid         bool                `json:"valid"`
-	Company       string              `json:"company,omitempty"`
-	VoucherType   string              `json:"voucher_type"`
-	Date          string              `json:"date"`
-	VoucherNumber string              `json:"voucher_number,omitempty"`
-	Reference     string              `json:"reference,omitempty"`
-	PartyLedger   string              `json:"party_ledger,omitempty"`
-	Narration     string              `json:"narration,omitempty"`
-	TotalDebit    float64             `json:"total_debit"`
-	TotalCredit   float64             `json:"total_credit"`
-	Entries       []VoucherEntryInput `json:"entries"`
-	Hint          string              `json:"hint,omitempty"`
+	Status           string                `json:"status"` // "preview" or "created"
+	Valid            bool                  `json:"valid"`
+	Company          string                `json:"company,omitempty"`
+	VoucherType      string                `json:"voucher_type"`
+	Date             string                `json:"date"`
+	VoucherNumber    string                `json:"voucher_number,omitempty"`
+	Reference        string                `json:"reference,omitempty"`
+	PartyLedger      string                `json:"party_ledger,omitempty"`
+	Narration        string                `json:"narration,omitempty"`
+	TotalDebit       float64               `json:"total_debit"`
+	TotalCredit      float64               `json:"total_credit"`
+	Entries          []VoucherEntryInput   `json:"entries"`
+	InventoryEntries []InventoryEntryInput `json:"inventory_entries,omitempty"`
+	DuplicateWarning string                `json:"duplicate_warning,omitempty"`
+	Hint             string                `json:"hint,omitempty"`
 }
 
 // GSTComponentTotals holds CGST/SGST/IGST/Cess amounts.
