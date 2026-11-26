@@ -381,17 +381,79 @@ func (s *Server) registerTools() {
 			),
 			s.handlers.HandleCreateVoucher,
 		)
+
+		// 15c. tally_alter_voucher
+		s.mcpServer.AddTool(
+			mcp.NewTool("tally_alter_voucher",
+				mcp.WithDescription("Alter an existing Tally voucher (narration, date, party, or entries). Defaults to preview=true; pass preview=false to apply."),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithString("company", mcp.Description("Target company")),
+				mcp.WithString("master_id", mcp.Description("Tally internal MasterID of the voucher")),
+				mcp.WithString("voucher_number", mcp.Description("Voucher number (if master_id not given)")),
+				mcp.WithString("voucher_type", mcp.Description("Voucher type to disambiguate")),
+				mcp.WithString("date", mcp.Description("Current voucher date to disambiguate")),
+				mcp.WithString("new_date", mcp.Description("Optional updated voucher date")),
+				mcp.WithString("party_ledger", mcp.Description("Optional updated party ledger")),
+				mcp.WithString("reference", mcp.Description("Optional updated reference")),
+				mcp.WithString("narration", mcp.Description("Optional updated narration")),
+				mcp.WithArray("entries", mcp.Description("Optional replacement entries [{ledger_name, amount, is_debit}] (defaults to existing entries)")),
+				mcp.WithBoolean("preview", mcp.Description("Dry-run validate without modifying Tally (default true)")),
+			),
+			s.handlers.HandleAlterVoucher,
+		)
+
+		// 15d. tally_cancel_voucher
+		s.mcpServer.AddTool(
+			mcp.NewTool("tally_cancel_voucher",
+				mcp.WithDescription("Cancel an existing Tally voucher (marks ISCANCELLED=Yes). Defaults to preview=true; pass preview=false to cancel."),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(true),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithString("company", mcp.Description("Target company")),
+				mcp.WithString("master_id", mcp.Description("Tally internal MasterID of the voucher")),
+				mcp.WithString("voucher_number", mcp.Description("Voucher number (if master_id not given)")),
+				mcp.WithString("voucher_type", mcp.Description("Voucher type to disambiguate")),
+				mcp.WithString("date", mcp.Description("Voucher date to disambiguate")),
+				mcp.WithString("narration", mcp.Description("Optional cancellation reason/narration")),
+				mcp.WithBoolean("preview", mcp.Description("Dry-run validate without cancelling in Tally (default true)")),
+			),
+			s.handlers.HandleCancelVoucher,
+		)
+
+		// 15e. tally_create_stock_item
+		s.mcpServer.AddTool(
+			mcp.NewTool("tally_create_stock_item",
+				mcp.WithDescription("Create a new stock item master in Tally (with unit, HSN, GST rate). Defaults to preview=true; pass preview=false to create."),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(false),
+				mcp.WithString("company", mcp.Description("Target company")),
+				mcp.WithString("name", mcp.Required(), mcp.Description("Stock item name")),
+				mcp.WithString("unit", mcp.Required(), mcp.Description("Base unit of measure (e.g. 'Nos', 'Kg', 'Pcs')")),
+				mcp.WithString("parent", mcp.Description("Stock group (default 'Primary')")),
+				mcp.WithString("hsn_code", mcp.Description("Optional HSN/SAC code")),
+				mcp.WithNumber("gst_rate", mcp.Description("Optional GST rate percentage (e.g. 18)")),
+				mcp.WithString("opening_qty", mcp.Description("Optional opening quantity (e.g. '10 Nos')")),
+				mcp.WithString("opening_rate", mcp.Description("Optional opening rate (e.g. '500/Nos')")),
+				mcp.WithNumber("opening_value", mcp.Description("Optional opening value")),
+				mcp.WithBoolean("preview", mcp.Description("Dry-run validate & check duplicates without creating (default true)")),
+			),
+			s.handlers.HandleCreateStockItem,
+		)
 	}
 
 	// 16. tally_get_gst_summary
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_get_gst_summary",
-			mcp.WithDescription("1-call GST compliance summary: Output Tax vs Input Tax Credit (CGST/SGST/IGST/Cess), Net Payable, and missing GSTIN flags."),
+			mcp.WithDescription("1-call GST compliance summary: Output Tax vs Input Tax Credit (CGST/SGST/IGST/Cess), Net Payable, missing GSTIN flags, and optional B2B/B2C breakdown."),
 			mcp.WithReadOnlyHintAnnotation(true),
 			mcp.WithIdempotentHintAnnotation(true),
 			mcp.WithString("company", mcp.Description("Target company")),
 			mcp.WithString("from_date", mcp.Description("Start date or keyword (default this_month)")),
 			mcp.WithString("to_date", mcp.Description("End date or keyword (default today)")),
+			mcp.WithBoolean("breakdown", mcp.Description("Include B2B vs B2C taxable/tax totals for Sales & Purchases (default false)")),
 		),
 		s.handlers.HandleGetGSTSummary,
 	)

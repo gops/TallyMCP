@@ -258,8 +258,8 @@ func finalizeGSTTotals(t *GSTComponentTotals) {
 	t.Total = math.Round((t.CGST+t.SGST+t.IGST+t.Cess)*100) / 100
 }
 
-// GetGSTSummaryForCompany aggregates Output GST, Input Tax Credit, Net Payable, and missing GSTIN flags.
-func (c *Client) GetGSTSummaryForCompany(ctx context.Context, company, fromDate, toDate string) (*GSTSummary, error) {
+// GetGSTSummaryForCompany aggregates Output GST, Input Tax Credit, Net Payable, missing GSTIN flags, and optional B2B/B2C breakdown.
+func (c *Client) GetGSTSummaryForCompany(ctx context.Context, company, fromDate, toDate string, breakdown bool) (*GSTSummary, error) {
 	cleanFrom, cleanTo := ResolveDateRange(fromDate, toDate, time.Now())
 	if cleanFrom == "" {
 		cleanFrom = CurrentFinancialYearStart(time.Now())
@@ -290,6 +290,12 @@ func (c *Client) GetGSTSummaryForCompany(ctx context.Context, company, fromDate,
 		FromDate: cleanFrom,
 		ToDate:   cleanTo,
 	}
+	if breakdown {
+		summary.B2BSales = &GSTBucketTotals{}
+		summary.B2CSales = &GSTBucketTotals{}
+		summary.B2BPurchases = &GSTBucketTotals{}
+		summary.B2CPurchases = &GSTBucketTotals{}
+	}
 	missingPartiesSet := make(map[string]bool)
 
 	for _, v := range vouchers {
@@ -310,24 +316,61 @@ func (c *Client) GetGSTSummaryForCompany(ctx context.Context, company, fromDate,
 		}
 
 		party := strings.TrimSpace(v.PartyLedgerName)
+		hasGSTIN := false
 		if party != "" && !strings.EqualFold(party, "Cash") {
-			if gstin, known := partyGSTIN[strings.ToLower(party)]; known && gstin == "" {
-				summary.MissingGSTINVouchers++
-				missingPartiesSet[party] = true
+			if gstin, known := partyGSTIN[strings.ToLower(party)]; known {
+				if gstin == "" {
+					summary.MissingGSTINVouchers++
+					missingPartiesSet[party] = true
+				} else {
+					hasGSTIN = true
+				}
 			}
 		}
 
+		var voucherTax float64
 		for _, leg := range v.LedgerEntries {
 			kind := classifyGSTLedger(leg.LedgerName)
 			if kind == "" {
 				continue
 			}
 			taxAmt := math.Abs(leg.Amount)
+			voucherTax += taxAmt
 			if isSales {
 				addGSTComponent(&summary.OutputTax, kind, taxAmt)
 			} else {
 				addGSTComponent(&summary.InputTaxCredit, kind, taxAmt)
 			}
+		}
+
+		if breakdown {
+			taxable := math.Max(0, amt-voucherTax)
+			var bucket *GSTBucketTotals
+			if isSales {
+				if hasGSTIN {
+					bucket = summary.B2BSales
+				} else {
+					bucket = summary.B2CSales
+				}
+			} else {
+				if hasGSTIN {
+					bucket = summary.B2BPurchases
+				} else {
+					bucket = summary.B2CPurchases
+				}
+			}
+			bucket.Vouchers++
+			bucket.TaxableValue += taxable
+			bucket.TaxAmount += voucherTax
+			bucket.TotalValue += amt
+		}
+	}
+
+	if breakdown {
+		for _, b := range []*GSTBucketTotals{summary.B2BSales, summary.B2CSales, summary.B2BPurchases, summary.B2CPurchases} {
+			b.TaxableValue = math.Round(b.TaxableValue*100) / 100
+			b.TaxAmount = math.Round(b.TaxAmount*100) / 100
+			b.TotalValue = math.Round(b.TotalValue*100) / 100
 		}
 	}
 
@@ -595,4 +638,243 @@ func (c *Client) GetSalesAnalyticsForCompany(ctx context.Context, company, vouch
 		TopParties:    parties,
 		TopItems:      items,
 	}, nil
+}
+
+// AlterVoucherForCompany looks up an existing voucher, validates updates, and previews or applies an Alter action.
+func (c *Client) AlterVoucherForCompany(
+	ctx context.Context,
+	company, masterID, voucherNumber, voucherType, date, newDate, reference, partyLedger, narration string,
+	rawEntries []VoucherEntryInput,
+	preview bool,
+) (*AlterVoucherResult, error) {
+	existing, err := c.GetVoucherForCompany(ctx, company, masterID, voucherNumber, voucherType, date)
+	if err != nil {
+		return nil, fmt.Errorf("locating voucher to alter: %w", err)
+	}
+
+	targetDate := CleanDate(newDate)
+	if targetDate == "" {
+		targetDate = CleanDate(existing.Date)
+	}
+	targetRef := strings.TrimSpace(reference)
+	if targetRef == "" {
+		targetRef = existing.Reference
+	}
+	targetNarr := strings.TrimSpace(narration)
+	if targetNarr == "" {
+		targetNarr = existing.Narration
+	}
+
+	var entriesInput []VoucherEntryInput
+	if len(rawEntries) > 0 {
+		entriesInput = rawEntries
+	} else {
+		for _, leg := range existing.LedgerEntries {
+			entriesInput = append(entriesInput, VoucherEntryInput{
+				LedgerName: leg.LedgerName,
+				Amount:     leg.Amount,
+				IsDebit:    leg.Amount < 0,
+			})
+		}
+	}
+	if len(entriesInput) < 2 {
+		return nil, fmt.Errorf("voucher must have at least 2 ledger entries")
+	}
+
+	resolvedEntries := make([]VoucherEntryInput, 0, len(entriesInput))
+	var totalDebit, totalCredit float64
+	for i, e := range entriesInput {
+		resolvedName, correctedFrom, rErr := c.ResolveLedgerName(ctx, company, e.LedgerName)
+		if rErr != nil {
+			return nil, fmt.Errorf("entry[%d]: %w", i, rErr)
+		}
+		absAmt := math.Abs(e.Amount)
+		isDebit := e.IsDebit || e.Amount < 0
+		signedAmt := absAmt
+		deemedPos := "No"
+		if isDebit {
+			signedAmt = -absAmt
+			deemedPos = "Yes"
+			totalDebit += absAmt
+		} else {
+			totalCredit += absAmt
+		}
+		resolvedEntries = append(resolvedEntries, VoucherEntryInput{
+			LedgerName:       resolvedName,
+			ResolvedFrom:     correctedFrom,
+			Amount:           math.Round(signedAmt*100) / 100,
+			IsDebit:          isDebit,
+			IsDeemedPositive: deemedPos,
+		})
+	}
+	totalDebit = math.Round(totalDebit*100) / 100
+	totalCredit = math.Round(totalCredit*100) / 100
+	if math.Abs(totalDebit-totalCredit) > 0.01 {
+		return nil, fmt.Errorf("altered voucher is unbalanced: total_debit=%.2f != total_credit=%.2f", totalDebit, totalCredit)
+	}
+
+	targetParty := strings.TrimSpace(partyLedger)
+	if targetParty != "" {
+		pName, _, pErr := c.ResolveLedgerName(ctx, company, targetParty)
+		if pErr != nil {
+			return nil, fmt.Errorf("party_ledger: %w", pErr)
+		}
+		targetParty = pName
+	} else {
+		targetParty = existing.PartyLedgerName
+		if targetParty == "" {
+			targetParty = resolvedEntries[0].LedgerName
+		}
+	}
+
+	xmlPayload, err := BuildAlterVoucherXML(company, "Alter", existing.MasterID, existing.VoucherTypeName, targetDate, existing.VoucherNumber, targetRef, targetParty, targetNarr, false, resolvedEntries, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	res := &AlterVoucherResult{
+		Status:        "preview",
+		Action:        "Alter",
+		Valid:         true,
+		Company:       company,
+		MasterID:      existing.MasterID,
+		VoucherType:   existing.VoucherTypeName,
+		VoucherNumber: existing.VoucherNumber,
+		Date:          targetDate,
+		PartyLedger:   targetParty,
+		Narration:     targetNarr,
+		TotalDebit:    totalDebit,
+		TotalCredit:   totalCredit,
+		Entries:       resolvedEntries,
+	}
+	if preview {
+		res.Hint = "Dry-run preview succeeded. Re-call tally_alter_voucher with preview=false to apply changes in Tally."
+		return res, nil
+	}
+
+	rawResp, err := c.ExecuteRawXML(ctx, xmlPayload)
+	if err != nil {
+		return nil, fmt.Errorf("executing Tally voucher alter: %w", err)
+	}
+	if imp := ParseImportResult(rawResp); imp != nil {
+		if imp.Errors > 0 || imp.Exceptions > 0 || imp.LineError != "" {
+			return nil, fmt.Errorf("Tally reported alter error: errors=%d exceptions=%d line_error=%q", imp.Errors, imp.Exceptions, imp.LineError)
+		}
+	}
+
+	c.InvalidateCache("vouchers:")
+	c.InvalidateCache("ledgers:")
+	res.Status = "altered"
+	return res, nil
+}
+
+// CancelVoucherForCompany looks up an existing voucher and previews or executes a Cancel action in Tally.
+func (c *Client) CancelVoucherForCompany(ctx context.Context, company, masterID, voucherNumber, voucherType, date, narration string, preview bool) (*AlterVoucherResult, error) {
+	existing, err := c.GetVoucherForCompany(ctx, company, masterID, voucherNumber, voucherType, date)
+	if err != nil {
+		return nil, fmt.Errorf("locating voucher to cancel: %w", err)
+	}
+	cleanDate := CleanDate(existing.Date)
+	reason := strings.TrimSpace(narration)
+	if reason == "" {
+		reason = existing.Narration
+	}
+
+	xmlPayload, err := BuildAlterVoucherXML(company, "Cancel", existing.MasterID, existing.VoucherTypeName, cleanDate, existing.VoucherNumber, existing.Reference, existing.PartyLedgerName, reason, true, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	res := &AlterVoucherResult{
+		Status:        "preview",
+		Action:        "Cancel",
+		Valid:         true,
+		Company:       company,
+		MasterID:      existing.MasterID,
+		VoucherType:   existing.VoucherTypeName,
+		VoucherNumber: existing.VoucherNumber,
+		Date:          cleanDate,
+		PartyLedger:   existing.PartyLedgerName,
+		Narration:     reason,
+	}
+	if preview {
+		res.Hint = "Dry-run preview succeeded. Re-call tally_cancel_voucher with preview=false to cancel this voucher in Tally."
+		return res, nil
+	}
+
+	rawResp, err := c.ExecuteRawXML(ctx, xmlPayload)
+	if err != nil {
+		return nil, fmt.Errorf("executing Tally voucher cancel: %w", err)
+	}
+	if imp := ParseImportResult(rawResp); imp != nil {
+		if imp.Errors > 0 || imp.Exceptions > 0 || imp.LineError != "" {
+			return nil, fmt.Errorf("Tally reported cancel error: errors=%d exceptions=%d line_error=%q", imp.Errors, imp.Exceptions, imp.LineError)
+		}
+	}
+
+	c.InvalidateCache("vouchers:")
+	c.InvalidateCache("ledgers:")
+	res.Status = "cancelled"
+	return res, nil
+}
+
+// CreateStockItemForCompany validates, checks duplicates, and previews or creates a stock item master in Tally.
+func (c *Client) CreateStockItemForCompany(ctx context.Context, company, name, parent, unit, hsnCode string, gstRate float64, openingQty, openingRate string, openingValue float64, preview bool) (*CreateStockItemResult, error) {
+	cleanName := strings.TrimSpace(name)
+	if cleanName == "" {
+		return nil, fmt.Errorf("stock item 'name' cannot be empty")
+	}
+	cleanUnit := strings.TrimSpace(unit)
+	if cleanUnit == "" {
+		return nil, fmt.Errorf("stock item 'unit' cannot be empty (e.g. 'Nos', 'Kg', 'Pcs')")
+	}
+	cleanParent := strings.TrimSpace(parent)
+	if cleanParent == "" {
+		cleanParent = "Primary"
+	}
+
+	if existing, lErr := c.ListStockItemsForCompany(ctx, company, ""); lErr == nil {
+		for _, item := range existing {
+			if strings.EqualFold(strings.TrimSpace(item.Name), cleanName) {
+				return nil, fmt.Errorf("stock item %q already exists in Tally", item.Name)
+			}
+		}
+	}
+
+	xmlPayload, err := BuildCreateStockItemXML(company, cleanName, cleanParent, cleanUnit, hsnCode, gstRate, openingQty, openingRate, openingValue)
+	if err != nil {
+		return nil, err
+	}
+
+	res := &CreateStockItemResult{
+		Status:       "preview",
+		Valid:        true,
+		Company:      company,
+		Name:         cleanName,
+		Parent:       cleanParent,
+		Unit:         cleanUnit,
+		HSNCode:      strings.TrimSpace(hsnCode),
+		GSTRate:      gstRate,
+		OpeningQty:   strings.TrimSpace(openingQty),
+		OpeningRate:  strings.TrimSpace(openingRate),
+		OpeningValue: openingValue,
+	}
+	if preview {
+		res.Hint = "Dry-run preview succeeded. Re-call tally_create_stock_item with preview=false to create this stock item in Tally."
+		return res, nil
+	}
+
+	rawResp, err := c.ExecuteRawXML(ctx, xmlPayload)
+	if err != nil {
+		return nil, fmt.Errorf("executing Tally stock item import: %w", err)
+	}
+	if imp := ParseImportResult(rawResp); imp != nil {
+		if imp.Errors > 0 || imp.Exceptions > 0 || imp.LineError != "" {
+			return nil, fmt.Errorf("Tally reported stock item import error: errors=%d exceptions=%d line_error=%q", imp.Errors, imp.Exceptions, imp.LineError)
+		}
+	}
+
+	c.InvalidateCache("stock:")
+	res.Status = "created"
+	return res, nil
 }

@@ -1560,12 +1560,135 @@ func (h *ToolHandlers) HandleGetGSTSummary(ctx context.Context, req mcp.CallTool
 	if fromDate == "" && toDate == "" {
 		fromDate = "this_month"
 	}
+	breakdown := getBoolDefault(req, "breakdown", false)
 
-	res, err := h.tallyClient.GetGSTSummaryForCompany(ctx, company, fromDate, toDate)
+	res, err := h.tallyClient.GetGSTSummaryForCompany(ctx, company, fromDate, toDate, breakdown)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to generate GST summary: %v", err)), nil
 	}
 
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
+
+// HandleAlterVoucher previews or alters an existing Tally voucher.
+func (h *ToolHandlers) HandleAlterVoucher(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	preview := getBoolDefault(req, "preview", true)
+	if !preview && h.isReadOnly(ctx) {
+		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode (altering vouchers with preview=false is disabled)."), nil
+	}
+	company, err := h.resolveCompany(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	var entries []tally.VoucherEntryInput
+	if args := req.GetArguments(); args != nil {
+		if rawVal, ok := args["entries"]; ok && rawVal != nil {
+			switch v := rawVal.(type) {
+			case string:
+				if strings.TrimSpace(v) != "" {
+					if uErr := json.Unmarshal([]byte(v), &entries); uErr != nil {
+						return mcp.NewToolResultError(fmt.Sprintf("Invalid JSON in 'entries': %v", uErr)), nil
+					}
+				}
+			default:
+				b, mErr := json.Marshal(v)
+				if mErr != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("Invalid 'entries' format: %v", mErr)), nil
+				}
+				if uErr := json.Unmarshal(b, &entries); uErr != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("Invalid 'entries' structure: %v", uErr)), nil
+				}
+			}
+		}
+	}
+
+	res, err := h.tallyClient.AlterVoucherForCompany(
+		ctx,
+		company,
+		req.GetString("master_id", ""),
+		req.GetString("voucher_number", ""),
+		req.GetString("voucher_type", ""),
+		req.GetString("date", ""),
+		req.GetString("new_date", ""),
+		req.GetString("reference", ""),
+		req.GetString("party_ledger", ""),
+		req.GetString("narration", ""),
+		entries,
+		preview,
+	)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Voucher alter failed: %v", err)), nil
+	}
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
+
+// HandleCancelVoucher previews or cancels an existing Tally voucher.
+func (h *ToolHandlers) HandleCancelVoucher(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	preview := getBoolDefault(req, "preview", true)
+	if !preview && h.isReadOnly(ctx) {
+		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode (cancelling vouchers with preview=false is disabled)."), nil
+	}
+	company, err := h.resolveCompany(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	res, err := h.tallyClient.CancelVoucherForCompany(
+		ctx,
+		company,
+		req.GetString("master_id", ""),
+		req.GetString("voucher_number", ""),
+		req.GetString("voucher_type", ""),
+		req.GetString("date", ""),
+		req.GetString("narration", ""),
+		preview,
+	)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Voucher cancel failed: %v", err)), nil
+	}
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
+
+// HandleCreateStockItem previews or creates a stock item master in Tally.
+func (h *ToolHandlers) HandleCreateStockItem(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	preview := getBoolDefault(req, "preview", true)
+	if !preview && h.isReadOnly(ctx) {
+		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode (creating stock items with preview=false is disabled)."), nil
+	}
+	company, err := h.resolveCompany(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	res, err := h.tallyClient.CreateStockItemForCompany(
+		ctx,
+		company,
+		req.GetString("name", ""),
+		req.GetString("parent", ""),
+		req.GetString("unit", ""),
+		req.GetString("hsn_code", ""),
+		req.GetFloat("gst_rate", 0),
+		req.GetString("opening_qty", ""),
+		req.GetString("opening_rate", ""),
+		req.GetFloat("opening_value", 0),
+		preview,
+	)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Stock item creation failed: %v", err)), nil
+	}
 	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
 	if fmtErr != nil {
 		return mcp.NewToolResultError(fmtErr.Error()), nil

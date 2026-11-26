@@ -505,6 +505,48 @@ type GSTComponentTotals struct {
 	Total float64 `json:"total"`
 }
 
+// CreateStockItemResult represents the preview or creation result of tally_create_stock_item.
+type CreateStockItemResult struct {
+	Status       string  `json:"status"` // "preview" or "created"
+	Valid        bool    `json:"valid"`
+	Company      string  `json:"company,omitempty"`
+	Name         string  `json:"name"`
+	Parent       string  `json:"parent"`
+	Unit         string  `json:"unit"`
+	HSNCode      string  `json:"hsn_code,omitempty"`
+	GSTRate      float64 `json:"gst_rate,omitempty"`
+	OpeningQty   string  `json:"opening_qty,omitempty"`
+	OpeningRate  string  `json:"opening_rate,omitempty"`
+	OpeningValue float64 `json:"opening_value,omitempty"`
+	Hint         string  `json:"hint,omitempty"`
+}
+
+// AlterVoucherResult represents the preview or execution result of tally_alter_voucher / tally_cancel_voucher.
+type AlterVoucherResult struct {
+	Status        string              `json:"status"` // "preview", "altered", or "cancelled"
+	Action        string              `json:"action"` // "Alter" or "Cancel"
+	Valid         bool                `json:"valid"`
+	Company       string              `json:"company,omitempty"`
+	MasterID      string              `json:"master_id,omitempty"`
+	VoucherType   string              `json:"voucher_type"`
+	VoucherNumber string              `json:"voucher_number,omitempty"`
+	Date          string              `json:"date"`
+	PartyLedger   string              `json:"party_ledger,omitempty"`
+	Narration     string              `json:"narration,omitempty"`
+	TotalDebit    float64             `json:"total_debit,omitempty"`
+	TotalCredit   float64             `json:"total_credit,omitempty"`
+	Entries       []VoucherEntryInput `json:"entries,omitempty"`
+	Hint          string              `json:"hint,omitempty"`
+}
+
+// GSTBucketTotals summarizes B2B or B2C invoice totals.
+type GSTBucketTotals struct {
+	Vouchers     int     `json:"vouchers"`
+	TaxableValue float64 `json:"taxable_value"`
+	TaxAmount    float64 `json:"tax_amount"`
+	TotalValue   float64 `json:"total_value"`
+}
+
 // GSTSummary provides a single-call GST compliance and tax liability snapshot.
 type GSTSummary struct {
 	Company              string             `json:"company,omitempty"`
@@ -517,6 +559,10 @@ type GSTSummary struct {
 	OutputTax            GSTComponentTotals `json:"output_tax"`
 	InputTaxCredit       GSTComponentTotals `json:"input_tax_credit"`
 	NetGSTPayable        GSTComponentTotals `json:"net_gst_payable"`
+	B2BSales             *GSTBucketTotals   `json:"b2b_sales,omitempty"`
+	B2CSales             *GSTBucketTotals   `json:"b2c_sales,omitempty"`
+	B2BPurchases         *GSTBucketTotals   `json:"b2b_purchases,omitempty"`
+	B2CPurchases         *GSTBucketTotals   `json:"b2c_purchases,omitempty"`
 	MissingGSTINParties  []string           `json:"missing_gstin_parties,omitempty"`
 	MissingGSTINVouchers int                `json:"missing_gstin_vouchers,omitempty"`
 }

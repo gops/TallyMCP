@@ -751,13 +751,15 @@ const createVoucherTemplate = `<ENVELOPE>
       </REQUESTDESC>
       <REQUESTDATA>
         <TALLYMESSAGE xmlns:UDF="TallyUDF">
-          <VOUCHER VCHTYPE="{{.VoucherTypeAttr}}" ACTION="Create" OBJVIEW="{{.ObjView}}">
+          <VOUCHER VCHTYPE="{{.VoucherTypeAttr}}" ACTION="{{.Action}}" OBJVIEW="{{.ObjView}}">
+            {{if .MasterID}}<MASTERID>{{.MasterID}}</MASTERID>{{end}}
             <DATE>{{.Date}}</DATE>
             <VOUCHERTYPENAME>{{.VoucherType}}</VOUCHERTYPENAME>
             {{if .VoucherNumber}}<VOUCHERNUMBER>{{.VoucherNumber}}</VOUCHERNUMBER>{{end}}
             {{if .Reference}}<REFERENCE>{{.Reference}}</REFERENCE>{{end}}
             {{if .PartyLedger}}<PARTYLEDGERNAME>{{.PartyLedger}}</PARTYLEDGERNAME>{{end}}
             {{if .Narration}}<NARRATION>{{.Narration}}</NARRATION>{{end}}
+            {{if .IsCancelled}}<ISCANCELLED>Yes</ISCANCELLED>{{end}}
             {{range .Entries}}
             <ALLLEDGERENTRIES.LIST>
               <LEDGERNAME>{{.LedgerName}}</LEDGERNAME>
@@ -800,6 +802,15 @@ const createVoucherTemplate = `<ENVELOPE>
 
 // BuildCreateVoucherXML generates the XML import envelope for creating a voucher in Tally.
 func BuildCreateVoucherXML(company, voucherType, date, voucherNumber, reference, partyLedger, narration string, entries []VoucherEntryInput, inventoryEntries []InventoryEntryInput) (string, error) {
+	return buildVoucherActionXML(company, "Create", "", voucherType, date, voucherNumber, reference, partyLedger, narration, false, entries, inventoryEntries)
+}
+
+// BuildAlterVoucherXML generates the XML import envelope for altering or cancelling an existing voucher in Tally.
+func BuildAlterVoucherXML(company, action, masterID, voucherType, date, voucherNumber, reference, partyLedger, narration string, isCancelled bool, entries []VoucherEntryInput, inventoryEntries []InventoryEntryInput) (string, error) {
+	return buildVoucherActionXML(company, action, masterID, voucherType, date, voucherNumber, reference, partyLedger, narration, isCancelled, entries, inventoryEntries)
+}
+
+func buildVoucherActionXML(company, action, masterID, voucherType, date, voucherNumber, reference, partyLedger, narration string, isCancelled bool, entries []VoucherEntryInput, inventoryEntries []InventoryEntryInput) (string, error) {
 	cleanType := SanitizeTDLString(voucherType)
 	if cleanType == "" {
 		return "", fmt.Errorf("voucher_type cannot be empty")
@@ -808,7 +819,7 @@ func BuildCreateVoucherXML(company, voucherType, date, voucherNumber, reference,
 	if cleanDate == "" {
 		return "", fmt.Errorf("date cannot be empty")
 	}
-	if len(entries) < 2 {
+	if !isCancelled && len(entries) < 2 {
 		return "", fmt.Errorf("at least 2 ledger entries are required")
 	}
 
@@ -872,6 +883,8 @@ func BuildCreateVoucherXML(company, voucherType, date, voucherNumber, reference,
 
 	return executeTemplate("createVoucher", createVoucherTemplate, map[string]any{
 		"Company":          XMLEscapeText(company),
+		"Action":           XMLEscapeAttr(action),
+		"MasterID":         XMLEscapeText(SanitizeTDLString(masterID)),
 		"VoucherTypeAttr":  XMLEscapeAttr(cleanType),
 		"VoucherType":      XMLEscapeText(cleanType),
 		"ObjView":          objView,
@@ -880,8 +893,75 @@ func BuildCreateVoucherXML(company, voucherType, date, voucherNumber, reference,
 		"Reference":        XMLEscapeText(SanitizeTDLString(reference)),
 		"PartyLedger":      XMLEscapeText(SanitizeTDLString(partyLedger)),
 		"Narration":        XMLEscapeText(SanitizeTDLString(narration)),
+		"IsCancelled":      isCancelled,
 		"Entries":          escapedEntries,
 		"InventoryEntries": escapedInv,
+	})
+}
+
+const createStockItemTemplate = `<ENVELOPE>
+  <HEADER>
+    <TALLYREQUEST>Import Data</TALLYREQUEST>
+  </HEADER>
+  <BODY>
+    <IMPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>All Masters</REPORTNAME>
+        <STATICVARIABLES>
+          {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
+        </STATICVARIABLES>
+      </REQUESTDESC>
+      <REQUESTDATA>
+        <TALLYMESSAGE xmlns:UDF="TallyUDF">
+          <STOCKITEM NAME="{{.NameAttr}}" ACTION="Create">
+            <NAME>{{.Name}}</NAME>
+            {{if .Parent}}<PARENT>{{.Parent}}</PARENT>{{end}}
+            <BASEUNITS>{{.Unit}}</BASEUNITS>
+            {{if .HSNCode}}<HSNCODE>{{.HSNCode}}</HSNCODE>{{end}}
+            {{if gt .GSTRate 0.0}}
+            <GSTAPPLICABLE>Applicable</GSTAPPLICABLE>
+            <GSTDETAILS.LIST>
+              <APPLICABILITY>Applicable</APPLICABILITY>
+              <STATEWISEDETAILS.LIST>
+                <STATENAME>Any</STATENAME>
+                <RATEDETAILS.LIST>
+                  <GSTRATEDUTYHEAD>Integrated Tax</GSTRATEDUTYHEAD>
+                  <GSTRATE>{{printf "%.2f" .GSTRate}}</GSTRATE>
+                </RATEDETAILS.LIST>
+              </STATEWISEDETAILS.LIST>
+            </GSTDETAILS.LIST>
+            {{end}}
+            {{if .OpeningQty}}<OPENINGBALANCE>{{.OpeningQty}}</OPENINGBALANCE>{{end}}
+            {{if .OpeningRate}}<OPENINGRATE>{{.OpeningRate}}</OPENINGRATE>{{end}}
+            {{if ne .OpeningValue 0.0}}<OPENINGVALUE>{{printf "%.2f" .OpeningValue}}</OPENINGVALUE>{{end}}
+          </STOCKITEM>
+        </TALLYMESSAGE>
+      </REQUESTDATA>
+    </IMPORTDATA>
+  </BODY>
+</ENVELOPE>`
+
+// BuildCreateStockItemXML generates the XML import envelope for creating a stock item master in Tally.
+func BuildCreateStockItemXML(company, name, parent, unit, hsnCode string, gstRate float64, openingQty, openingRate string, openingValue float64) (string, error) {
+	cleanName := SanitizeTDLString(name)
+	if cleanName == "" {
+		return "", fmt.Errorf("stock item name cannot be empty")
+	}
+	cleanUnit := SanitizeTDLString(unit)
+	if cleanUnit == "" {
+		return "", fmt.Errorf("unit cannot be empty")
+	}
+	return executeTemplate("createStockItem", createStockItemTemplate, map[string]any{
+		"Company":      XMLEscapeText(company),
+		"NameAttr":     XMLEscapeAttr(cleanName),
+		"Name":         XMLEscapeText(cleanName),
+		"Parent":       XMLEscapeText(SanitizeTDLString(parent)),
+		"Unit":         XMLEscapeText(cleanUnit),
+		"HSNCode":      XMLEscapeText(SanitizeTDLString(hsnCode)),
+		"GSTRate":      gstRate,
+		"OpeningQty":   XMLEscapeText(SanitizeTDLString(openingQty)),
+		"OpeningRate":  XMLEscapeText(SanitizeTDLString(openingRate)),
+		"OpeningValue": openingValue,
 	})
 }
 

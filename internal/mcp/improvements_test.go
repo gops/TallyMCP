@@ -713,3 +713,110 @@ func TestWorkflowTools_VoucherGSTBankReconAnalytics(t *testing.T) {
 		t.Errorf("expected Acme Corp and Widget Pro in sales analytics, got: %s", anaTxt)
 	}
 }
+
+func TestAlterCancelStockItemAndGSTBreakdown(t *testing.T) {
+	mockXML := `<ENVELOPE><HEADER><VERSION>1</VERSION></HEADER><BODY><DATA><COLLECTION>
+		<LEDGER NAME="B2B Buyer"><PARENT>Sundry Debtors</PARENT><CLOSINGBALANCE>-11800.00</CLOSINGBALANCE><PARTYGSTIN>27AABCU9603R1ZM</PARTYGSTIN></LEDGER>
+		<LEDGER NAME="Walkin Buyer"><PARENT>Sundry Debtors</PARENT><CLOSINGBALANCE>-1180.00</CLOSINGBALANCE><PARTYGSTIN></PARTYGSTIN></LEDGER>
+		<LEDGER NAME="Sales Account"><PARENT>Sales Accounts</PARENT><CLOSINGBALANCE>11000.00</CLOSINGBALANCE></LEDGER>
+		<LEDGER NAME="IGST"><PARENT>Duties &amp; Taxes</PARENT><CLOSINGBALANCE>1980.00</CLOSINGBALANCE></LEDGER>
+		<STOCKITEM NAME="Existing Item"><BASEUNITS>Nos</BASEUNITS><CLOSINGBALANCE>10 Nos</CLOSINGBALANCE></STOCKITEM>
+		<VOUCHER MASTERID="101" VOUCHERNUMBER="S-101" DATE="20261110" VOUCHERTYPENAME="Sales" PARTYLEDGERNAME="B2B Buyer" AMOUNT="-11800.00">
+			<MASTERID>101</MASTERID>
+			<VOUCHERNUMBER>S-101</VOUCHERNUMBER>
+			<DATE>20261110</DATE>
+			<VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+			<PARTYLEDGERNAME>B2B Buyer</PARTYLEDGERNAME>
+			<AMOUNT>-11800.00</AMOUNT>
+			<ALLLEDGERENTRIES.LIST><LEDGERNAME>B2B Buyer</LEDGERNAME><AMOUNT>-11800.00</AMOUNT></ALLLEDGERENTRIES.LIST>
+			<ALLLEDGERENTRIES.LIST><LEDGERNAME>Sales Account</LEDGERNAME><AMOUNT>10000.00</AMOUNT></ALLLEDGERENTRIES.LIST>
+			<ALLLEDGERENTRIES.LIST><LEDGERNAME>IGST</LEDGERNAME><AMOUNT>1800.00</AMOUNT></ALLLEDGERENTRIES.LIST>
+		</VOUCHER>
+		<VOUCHER MASTERID="102" VOUCHERNUMBER="S-102" DATE="20261111" VOUCHERTYPENAME="Sales" PARTYLEDGERNAME="Walkin Buyer" AMOUNT="-1180.00">
+			<ALLLEDGERENTRIES.LIST><LEDGERNAME>Walkin Buyer</LEDGERNAME><AMOUNT>-1180.00</AMOUNT></ALLLEDGERENTRIES.LIST>
+			<ALLLEDGERENTRIES.LIST><LEDGERNAME>Sales Account</LEDGERNAME><AMOUNT>1000.00</AMOUNT></ALLLEDGERENTRIES.LIST>
+			<ALLLEDGERENTRIES.LIST><LEDGERNAME>IGST</LEDGERNAME><AMOUNT>180.00</AMOUNT></ALLLEDGERENTRIES.LIST>
+		</VOUCHER>
+	</COLLECTION></DATA></BODY></ENVELOPE>`
+
+	tallyClient := tally.NewClient(config.TallyConfig{URL: "http://mock-tally:9000", CacheTTLSeconds: 30})
+	tallyClient.SetTransport(mockRoundTripper(func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(mockXML)),
+			Header:     make(http.Header),
+		}
+	}))
+
+	handlers := mcppkg.NewToolHandlers(tallyClient, "v1.0.24", "gops/TallyMCP", "json")
+	ctx := context.Background()
+
+	// 1. tally_alter_voucher preview=true
+	altRes, err := handlers.HandleAlterVoucher(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "tally_alter_voucher",
+			Arguments: map[string]any{"master_id": "101", "narration": "Updated invoice narration"},
+		},
+	})
+	if err != nil || altRes.IsError {
+		t.Fatalf("HandleAlterVoucher preview failed: err=%v res=%+v", err, altRes)
+	}
+	altTxt := altRes.Content[0].(mcp.TextContent).Text
+	if !strings.Contains(altTxt, `"action":"Alter"`) || !strings.Contains(altTxt, `"Updated invoice narration"`) {
+		t.Errorf("unexpected alter preview response: %s", altTxt)
+	}
+
+	// 2. tally_cancel_voucher preview=true
+	canRes, err := handlers.HandleCancelVoucher(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "tally_cancel_voucher",
+			Arguments: map[string]any{"master_id": "101", "narration": "Cancelled by customer"},
+		},
+	})
+	if err != nil || canRes.IsError {
+		t.Fatalf("HandleCancelVoucher preview failed: err=%v res=%+v", err, canRes)
+	}
+	canTxt := canRes.Content[0].(mcp.TextContent).Text
+	if !strings.Contains(canTxt, `"action":"Cancel"`) || !strings.Contains(canTxt, `"S-101"`) {
+		t.Errorf("unexpected cancel preview response: %s", canTxt)
+	}
+
+	// 3. tally_create_stock_item preview=true + duplicate rejection
+	stkRes, err := handlers.HandleCreateStockItem(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "tally_create_stock_item",
+			Arguments: map[string]any{"name": "New Widget", "unit": "Nos", "hsn_code": "8471", "gst_rate": 18},
+		},
+	})
+	if err != nil || stkRes.IsError {
+		t.Fatalf("HandleCreateStockItem preview failed: err=%v res=%+v", err, stkRes)
+	}
+	if !strings.Contains(stkRes.Content[0].(mcp.TextContent).Text, `"status":"preview"`) {
+		t.Errorf("expected preview status for stock item, got: %s", stkRes.Content[0].(mcp.TextContent).Text)
+	}
+
+	dupStk, err := handlers.HandleCreateStockItem(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "tally_create_stock_item",
+			Arguments: map[string]any{"name": "Existing Item", "unit": "Nos"},
+		},
+	})
+	if err != nil || !dupStk.IsError || !strings.Contains(dupStk.Content[0].(mcp.TextContent).Text, "already exists") {
+		t.Errorf("expected duplicate stock item error, got err=%v res=%+v", err, dupStk)
+	}
+
+	// 4. tally_get_gst_summary with breakdown=true
+	gstRes, err := handlers.HandleGetGSTSummary(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "tally_get_gst_summary",
+			Arguments: map[string]any{"from_date": "20261101", "to_date": "20261130", "breakdown": true},
+		},
+	})
+	if err != nil || gstRes.IsError {
+		t.Fatalf("HandleGetGSTSummary breakdown failed: err=%v res=%+v", err, gstRes)
+	}
+	gstTxt := gstRes.Content[0].(mcp.TextContent).Text
+	if !strings.Contains(gstTxt, `"b2b_sales"`) || !strings.Contains(gstTxt, `"b2c_sales"`) || !strings.Contains(gstTxt, `"taxable_value":10000`) {
+		t.Errorf("expected b2b_sales and b2c_sales in GST breakdown, got: %s", gstTxt)
+	}
+}

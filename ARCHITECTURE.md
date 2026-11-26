@@ -493,6 +493,9 @@ The MCP server registers the following tools in `internal/mcp/server.go`:
 | `tally_execute_xml` | `HandleExecuteXML` | Raw TDL / XML query execution escape hatch. |
 | `tally_create_ledger` | `HandleCreateLedger` | Master ledger creation (auto-invalidates cache). |
 | `tally_create_voucher` | `HandleCreateVoucher` | Structured voucher creation with `preview=true` dry-run validation. |
+| `tally_alter_voucher` | `HandleAlterVoucher` | Alter an existing voucher (`preview=true` default). |
+| `tally_cancel_voucher` | `HandleCancelVoucher` | Cancel an existing voucher (`preview=true` default). |
+| `tally_create_stock_item` | `HandleCreateStockItem` | Create a stock item master with unit/HSN/GST (`preview=true` default). |
 | `tally_get_gst_summary` | `HandleGetGSTSummary` | 1-call GST Output vs Input Credit, Net Payable, and missing GSTIN flags. |
 | `tally_get_bank_recon` | `HandleGetBankRecon` | Bank reconciliation summary with reconciled vs unreconciled entries. |
 | `tally_get_sales_analytics` | `HandleGetSalesAnalytics` | Top parties and top stock items for Sales or Purchase vouchers. |
