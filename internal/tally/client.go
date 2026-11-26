@@ -55,6 +55,8 @@ type Client struct {
 	exePath          string        // Path to Tally executable
 	autoStart        bool          // Automatically start Tally if not running
 	launchMu         sync.Mutex    // Protects process start concurrency
+	auditMu          sync.Mutex    // Protects auditLogs slice
+	auditLogs        []AuditEntry  // Recent structured audit records
 }
 
 // NewClient creates a new Tally XML Client.
@@ -395,11 +397,7 @@ func (c *Client) ListLedgersWithDates(ctx context.Context, company, group, fromD
 		}
 
 		for i := range result {
-			if result[i].Parent == "" && result[i].ParentAttr != "" {
-				result[i].Parent = result[i].ParentAttr
-			}
-			result[i].OpeningBalance = round2(result[i].OpeningBalance)
-			result[i].ClosingBalance = round2(result[i].ClosingBalance)
+			normalizeLedgerItem(&result[i])
 		}
 
 		if c.cache != nil && len(result) > 0 {
@@ -416,7 +414,14 @@ func (c *Client) ListLedgersWithDates(ctx context.Context, company, group, fromD
 
 // ListGroupsForCompany fetches account groups for resolving sub-group hierarchies.
 func (c *Client) ListGroupsForCompany(ctx context.Context, company string) ([]GroupItem, error) {
-	cacheKey := fmt.Sprintf("groups:%s", company)
+	return c.ListGroupsWithDates(ctx, company, "", "")
+}
+
+// ListGroupsWithDates fetches account groups with optional date bounds.
+func (c *Client) ListGroupsWithDates(ctx context.Context, company, fromDate, toDate string) ([]GroupItem, error) {
+	cleanFrom := CleanDate(fromDate)
+	cleanTo := CleanDate(toDate)
+	cacheKey := fmt.Sprintf("groups:%s:%s:%s", company, cleanFrom, cleanTo)
 	if c.cache != nil {
 		if cached, ok := c.cache.Get(cacheKey); ok {
 			if groups, ok := cached.([]GroupItem); ok {
@@ -426,7 +431,7 @@ func (c *Client) ListGroupsForCompany(ctx context.Context, company string) ([]Gr
 	}
 
 	val, err := c.flight.Do(ctx, cacheKey, func(fetchCtx context.Context) (any, error) {
-		xmlQuery, err := BuildListGroupsXML(company)
+		xmlQuery, err := BuildListGroupsXMLWithDates(company, cleanFrom, cleanTo)
 		if err != nil {
 			return nil, err
 		}
@@ -469,6 +474,8 @@ func (c *Client) ListGroupsForCompany(ctx context.Context, company string) ([]Gr
 			if groups[i].Parent == "" && groups[i].ParentAttr != "" {
 				groups[i].Parent = groups[i].ParentAttr
 			}
+			groups[i].OpeningBalance = round2(groups[i].OpeningBalance)
+			groups[i].ClosingBalance = round2(groups[i].ClosingBalance)
 		}
 		if c.cache != nil && len(groups) > 0 {
 			c.cache.Set(cacheKey, groups)
@@ -480,6 +487,137 @@ func (c *Client) ListGroupsForCompany(ctx context.Context, company string) ([]Gr
 	}
 	groups, _ := val.([]GroupItem)
 	return slices.Clone(groups), nil
+}
+
+// GetGroupSummaryForCompany returns a group's hierarchy, sub-groups, and child ledgers with balances.
+func (c *Client) GetGroupSummaryForCompany(ctx context.Context, company, groupInput, fromDate, toDate string, includeSubGroups, nonZeroOnly bool) (*GroupSummaryResult, error) {
+	target := NormalizeGroupAlias(groupInput)
+	if strings.TrimSpace(target) == "" {
+		return nil, fmt.Errorf("group name cannot be empty")
+	}
+
+	cleanFrom, cleanTo := ResolveDateRange(fromDate, toDate, time.Now())
+	groups, err := c.ListGroupsWithDates(ctx, company, cleanFrom, cleanTo)
+	if err != nil {
+		return nil, fmt.Errorf("listing groups: %w", err)
+	}
+	ledgers, err := c.ListLedgersWithDates(ctx, company, "", cleanFrom, cleanTo)
+	if err != nil {
+		return nil, fmt.Errorf("listing ledgers: %w", err)
+	}
+
+	resolvedGroup := target
+	var groupParent string
+	var groupOpen, groupClose float64
+	foundGroup := false
+
+	for _, g := range groups {
+		if strings.EqualFold(strings.TrimSpace(g.Name), target) {
+			resolvedGroup = g.Name
+			groupParent = g.Parent
+			groupOpen = g.OpeningBalance
+			groupClose = g.ClosingBalance
+			foundGroup = true
+			break
+		}
+	}
+	if !foundGroup {
+		lowerT := strings.ToLower(target)
+		var subMatches []GroupItem
+		for _, g := range groups {
+			if strings.Contains(strings.ToLower(g.Name), lowerT) {
+				subMatches = append(subMatches, g)
+			}
+		}
+		if len(subMatches) == 1 {
+			resolvedGroup = subMatches[0].Name
+			groupParent = subMatches[0].Parent
+			groupOpen = subMatches[0].OpeningBalance
+			groupClose = subMatches[0].ClosingBalance
+			foundGroup = true
+		} else if len(groups) > 0 && !hasLedgersWithParent(ledgers, target) {
+			return nil, fmt.Errorf("group %q not found in Tally", groupInput)
+		}
+	}
+
+	// Build descendant group set
+	allowedGroups := map[string]bool{
+		strings.ToLower(strings.TrimSpace(resolvedGroup)): true,
+	}
+	var subGroups []GroupItem
+	if includeSubGroups {
+		changed := true
+		for changed {
+			changed = false
+			for _, g := range groups {
+				gLower := strings.ToLower(strings.TrimSpace(g.Name))
+				pLower := strings.ToLower(strings.TrimSpace(g.Parent))
+				if !allowedGroups[gLower] && allowedGroups[pLower] {
+					allowedGroups[gLower] = true
+					subGroups = append(subGroups, g)
+					changed = true
+				}
+			}
+		}
+	} else {
+		for _, g := range groups {
+			if strings.EqualFold(strings.TrimSpace(g.Parent), resolvedGroup) {
+				subGroups = append(subGroups, g)
+			}
+		}
+	}
+
+	var matchedLedgers []LedgerItem
+	var sumOpen, sumClose float64
+	for _, l := range ledgers {
+		pLower := strings.ToLower(strings.TrimSpace(l.Parent))
+		if allowedGroups[pLower] {
+			sumOpen += l.OpeningBalance
+			sumClose += l.ClosingBalance
+			if nonZeroOnly && l.OpeningBalance == 0 && l.ClosingBalance == 0 {
+				continue
+			}
+			matchedLedgers = append(matchedLedgers, l)
+		}
+	}
+
+	if groupOpen == 0 && sumOpen != 0 {
+		groupOpen = round2(sumOpen)
+	}
+	if groupClose == 0 && sumClose != 0 {
+		groupClose = round2(sumClose)
+	}
+
+	if nonZeroOnly && len(subGroups) > 0 {
+		filteredSubs := make([]GroupItem, 0, len(subGroups))
+		for _, sg := range subGroups {
+			if sg.OpeningBalance != 0 || sg.ClosingBalance != 0 {
+				filteredSubs = append(filteredSubs, sg)
+			}
+		}
+		subGroups = filteredSubs
+	}
+
+	return &GroupSummaryResult{
+		Company:        company,
+		Group:          resolvedGroup,
+		Parent:         groupParent,
+		OpeningBalance: round2(groupOpen),
+		ClosingBalance: round2(groupClose),
+		SubGroupsCount: len(subGroups),
+		SubGroups:      subGroups,
+		LedgersCount:   len(matchedLedgers),
+		Ledgers:        matchedLedgers,
+	}, nil
+}
+
+func hasLedgersWithParent(ledgers []LedgerItem, parent string) bool {
+	for _, l := range ledgers {
+		if strings.EqualFold(strings.TrimSpace(l.Parent), strings.TrimSpace(parent)) {
+			return true
+		}
+	}
+	return false
 }
 
 // FilterLedgers queries ledgers, applies case-insensitive substring search across name/parent/state, and returns paginated ledgers with optional compact projection.
@@ -494,26 +632,55 @@ func (c *Client) FilterLedgersForCompany(ctx context.Context, company, group, se
 
 // FilterLedgersSortedForCompany queries ledgers with optional sorting ("balance_desc", "balance_asc", "name_asc"), search, pagination, and compact projection.
 func (c *Client) FilterLedgersSortedForCompany(ctx context.Context, company, group, search, sortMode string, limit, offset int, summaryOnly bool) (*PaginatedLedgers, error) {
-	allLedgers, err := c.ListLedgersForCompany(ctx, company, group)
+	return c.FilterLedgersWithOptions(ctx, LedgerFilterOptions{
+		Company:     company,
+		Group:       group,
+		Search:      search,
+		Sort:        sortMode,
+		Limit:       limit,
+		Offset:      offset,
+		SummaryOnly: summaryOnly,
+	})
+}
+
+// FilterLedgersWithOptions queries ledgers with rich filtering (group, search, gstin, state, pan, non_zero_only), sorting, and pagination.
+func (c *Client) FilterLedgersWithOptions(ctx context.Context, opts LedgerFilterOptions) (*PaginatedLedgers, error) {
+	allLedgers, err := c.ListLedgersForCompany(ctx, opts.Company, opts.Group)
 	if err != nil {
 		return nil, err
 	}
 
-	search = strings.TrimSpace(strings.ToLower(search))
-	var filtered []LedgerItem
-	if search == "" {
-		filtered = slices.Clone(allLedgers)
-	} else {
-		for _, l := range allLedgers {
-			if strings.Contains(strings.ToLower(l.Name), search) ||
-				strings.Contains(strings.ToLower(l.Parent), search) ||
-				strings.Contains(strings.ToLower(l.State), search) {
-				filtered = append(filtered, l)
-			}
+	search := strings.TrimSpace(strings.ToLower(opts.Search))
+	gstinFilter := strings.TrimSpace(strings.ToLower(opts.GSTIN))
+	stateFilter := strings.TrimSpace(strings.ToLower(opts.State))
+	panFilter := strings.TrimSpace(strings.ToLower(opts.PAN))
+
+	filtered := make([]LedgerItem, 0, len(allLedgers))
+	for _, l := range allLedgers {
+		if opts.NonZeroOnly && l.OpeningBalance == 0 && l.ClosingBalance == 0 {
+			continue
 		}
+		if gstinFilter != "" && !strings.Contains(strings.ToLower(l.GSTIN), gstinFilter) {
+			continue
+		}
+		if stateFilter != "" && !strings.Contains(strings.ToLower(l.State), stateFilter) {
+			continue
+		}
+		if panFilter != "" && !strings.Contains(strings.ToLower(l.PAN), panFilter) {
+			continue
+		}
+		if search != "" &&
+			!strings.Contains(strings.ToLower(l.Name), search) &&
+			!strings.Contains(strings.ToLower(l.Parent), search) &&
+			!strings.Contains(strings.ToLower(l.State), search) &&
+			!strings.Contains(strings.ToLower(l.GSTIN), search) &&
+			!strings.Contains(strings.ToLower(l.PAN), search) {
+			continue
+		}
+		filtered = append(filtered, l)
 	}
 
-	switch strings.ToLower(strings.TrimSpace(sortMode)) {
+	switch strings.ToLower(strings.TrimSpace(opts.Sort)) {
 	case "balance_desc":
 		sort.SliceStable(filtered, func(i, j int) bool {
 			return math.Abs(filtered[i].ClosingBalance) > math.Abs(filtered[j].ClosingBalance)
@@ -529,12 +696,14 @@ func (c *Client) FilterLedgersSortedForCompany(ctx context.Context, company, gro
 	}
 
 	total := len(filtered)
+	limit := opts.Limit
 	if limit <= 0 {
 		limit = 50
 	}
 	if limit > 250 {
 		limit = 250
 	}
+	offset := opts.Offset
 	if offset < 0 {
 		offset = 0
 	}
@@ -559,14 +728,19 @@ func (c *Client) FilterLedgersSortedForCompany(ctx context.Context, company, gro
 	}
 
 	var payload any
-	if summaryOnly {
+	if opts.SummaryOnly {
 		compact := make([]CompactLedgerItem, len(pagedSlice))
 		for i, l := range pagedSlice {
 			compact[i] = CompactLedgerItem{
-				Name:           l.Name,
-				Parent:         l.Parent,
-				ClosingBalance: round2(l.ClosingBalance),
-				State:          l.State,
+				Name:                l.Name,
+				Parent:              l.Parent,
+				State:               l.State,
+				GSTIN:               l.GSTIN,
+				GSTRegistrationType: l.GSTRegistrationType,
+				PAN:                 l.PAN,
+				OpeningBalance:      round2(l.OpeningBalance),
+				ClosingBalance:      round2(l.ClosingBalance),
+				MaintainBillByBill:  l.MaintainBillByBill,
 			}
 		}
 		payload = compact
@@ -648,19 +822,95 @@ func (c *Client) GetLedgerDetailForCompany(ctx context.Context, company, ledgerN
 		}
 	}
 
-	if matched.Parent == "" && matched.ParentAttr != "" {
-		matched.Parent = matched.ParentAttr
+	normalizeLedgerDetail(matched)
+	return matched, nil
+}
+
+func extractGSTFromRegDetails(details []LedgerGSTRegDetail, alt []LedgerGSTRegDetail) (gstin, regType, state string) {
+	combined := details
+	if len(combined) == 0 {
+		combined = alt
 	}
-	matched.OpeningBalance = round2(matched.OpeningBalance)
-	matched.ClosingBalance = round2(matched.ClosingBalance)
+	for _, d := range combined {
+		if gstin == "" && strings.TrimSpace(d.GSTIN) != "" {
+			gstin = strings.TrimSpace(d.GSTIN)
+		}
+		if regType == "" && strings.TrimSpace(d.GSTRegistrationType) != "" {
+			regType = strings.TrimSpace(d.GSTRegistrationType)
+		}
+		if state == "" && strings.TrimSpace(d.State) != "" {
+			state = strings.TrimSpace(d.State)
+		}
+	}
+	return gstin, regType, state
+}
+
+func normalizeLedgerItem(l *LedgerItem) {
+	if l.Parent == "" && l.ParentAttr != "" {
+		l.Parent = strings.TrimSpace(l.ParentAttr)
+	} else {
+		l.Parent = strings.TrimSpace(l.Parent)
+	}
+	l.OpeningBalance = round2(l.OpeningBalance)
+	l.ClosingBalance = round2(l.ClosingBalance)
+	if strings.TrimSpace(l.State) == "" && strings.TrimSpace(l.PriorState) != "" {
+		l.State = strings.TrimSpace(l.PriorState)
+	} else {
+		l.State = strings.TrimSpace(l.State)
+	}
+	regGSTIN, regType, regState := extractGSTFromRegDetails(l.LedGSTRegDetails, l.LedGSTRegDetailsAlt)
+	if strings.TrimSpace(l.GSTIN) == "" && regGSTIN != "" {
+		l.GSTIN = regGSTIN
+	}
+	if strings.TrimSpace(l.GSTRegistrationType) == "" && regType != "" {
+		l.GSTRegistrationType = regType
+	}
+	if l.State == "" && regState != "" {
+		l.State = regState
+	}
+	l.GSTIN = strings.ToUpper(strings.TrimSpace(l.GSTIN))
+	l.GSTRegistrationType = strings.TrimSpace(l.GSTRegistrationType)
+	l.PAN = strings.ToUpper(strings.TrimSpace(l.PAN))
+	l.MaintainBillByBill = strings.EqualFold(strings.TrimSpace(l.IsBillWiseOnRaw), "Yes")
+}
+
+func normalizeLedgerDetail(l *LedgerDetail) {
+	if l.Parent == "" && l.ParentAttr != "" {
+		l.Parent = strings.TrimSpace(l.ParentAttr)
+	} else {
+		l.Parent = strings.TrimSpace(l.Parent)
+	}
+	l.OpeningBalance = round2(l.OpeningBalance)
+	l.ClosingBalance = round2(l.ClosingBalance)
+	if strings.TrimSpace(l.State) == "" && strings.TrimSpace(l.PriorState) != "" {
+		l.State = strings.TrimSpace(l.PriorState)
+	} else {
+		l.State = strings.TrimSpace(l.State)
+	}
+	regGSTIN, regType, regState := extractGSTFromRegDetails(l.LedGSTRegDetails, l.LedGSTRegDetailsAlt)
+	if strings.TrimSpace(l.GSTIN) == "" && regGSTIN != "" {
+		l.GSTIN = regGSTIN
+	}
+	if strings.TrimSpace(l.GSTRegistrationType) == "" && regType != "" {
+		l.GSTRegistrationType = regType
+	}
+	if l.State == "" && regState != "" {
+		l.State = regState
+	}
+	l.GSTIN = strings.ToUpper(strings.TrimSpace(l.GSTIN))
+	l.GSTRegistrationType = strings.TrimSpace(l.GSTRegistrationType)
+	l.PAN = strings.ToUpper(strings.TrimSpace(l.PAN))
+	l.MaintainBillByBill = strings.EqualFold(strings.TrimSpace(l.IsBillWiseOnRaw), "Yes")
 	var cleanAddr []string
-	for _, line := range matched.Address {
+	for _, line := range l.Address {
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
 			cleanAddr = append(cleanAddr, trimmed)
 		}
 	}
-	matched.Address = cleanAddr
-	return matched, nil
+	l.Address = cleanAddr
+	for i := range l.OpeningBillAllocations {
+		l.OpeningBillAllocations[i].Amount = round2(l.OpeningBillAllocations[i].Amount)
+	}
 }
 
 // GetLedger retrieves detailed information for a single ledger.

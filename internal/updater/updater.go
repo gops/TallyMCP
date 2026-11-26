@@ -79,7 +79,9 @@ func ApplyUpdate(ctx context.Context, info *UpdateInfo, progressFn func(download
 	}
 	tempPath := tempFile.Name()
 	defer func() {
-		_ = os.Remove(tempPath)
+		if _, statErr := os.Lstat(tempPath); statErr == nil {
+			_ = MoveToTrash(tempPath)
+		}
 	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, info.AssetURL, nil)
@@ -137,7 +139,9 @@ func ApplyUpdate(ctx context.Context, info *UpdateInfo, progressFn func(download
 			return fmt.Errorf("extracting binary from zip: %w", err)
 		}
 		defer func() {
-			_ = os.Remove(extractedPath)
+			if _, statErr := os.Lstat(extractedPath); statErr == nil {
+				_ = MoveToTrash(extractedPath)
+			}
 		}()
 		finalNewBinaryPath = extractedPath
 	}
@@ -150,10 +154,17 @@ func ApplyUpdate(ctx context.Context, info *UpdateInfo, progressFn func(download
 		return fmt.Errorf("setting executable permissions: %w", err)
 	}
 
-	// Step 3: Windows Safe Binary Swap
-	// Rename current running executable to .old
+	// Step 3: Safe Binary Swap
+	// Move any pre-existing .old binary to Trash, then rename current running executable to .old
 	oldExePath := filepath.Join(exeDir, exeName+".old")
-	_ = os.Remove(oldExePath) // Clean any existing .old file if left behind
+	if fi, lerr := os.Lstat(oldExePath); lerr == nil {
+		if fi.IsDir() || !fi.Mode().IsRegular() || fi.Mode()&os.ModeSymlink != 0 || !IsValidBinary(oldExePath) {
+			return fmt.Errorf("refusing to replace unexpected entry at %s", oldExePath)
+		}
+		if err := MoveToTrash(oldExePath); err != nil {
+			return fmt.Errorf("moving existing old binary %s to trash: %w", oldExePath, err)
+		}
+	}
 
 	if err := os.Rename(exePath, oldExePath); err != nil {
 		return fmt.Errorf("renaming running executable to %s: %w", oldExePath, err)
@@ -167,22 +178,6 @@ func ApplyUpdate(ctx context.Context, info *UpdateInfo, progressFn func(download
 	}
 
 	return nil
-}
-
-// CleanupOldBinary removes any stale .old binary left over from a previous update.
-// This is called automatically when the application starts up.
-func CleanupOldBinary() {
-	exePath, err := os.Executable()
-	if err != nil {
-		return
-	}
-	if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
-		exePath = resolved
-	}
-	oldPath := exePath + ".old"
-	if fi, err := os.Stat(oldPath); err == nil && !fi.IsDir() {
-		_ = os.Remove(oldPath)
-	}
 }
 
 // VerifyFileChecksum downloads checksums.txt from checksumsURL and verifies the SHA-256 hash of filePath.

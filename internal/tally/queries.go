@@ -47,7 +47,7 @@ const listLedgersTemplate = `<ENVELOPE>
           <COLLECTION NAME="LedgerColl" ISMODIFY="No" ISFIXED="No">
             <TYPE>Ledger</TYPE>
             {{if .Group}}<CHILDOF>{{.Group}}</CHILDOF>{{end}}
-            <FETCH>Name, Parent, OpeningBalance, ClosingBalance, LedgerPhone, Email, LedgerContact, CountryName, LedgerStateName, PartyGSTIN, CreditLimit</FETCH>
+            <FETCH>Name, Parent, OpeningBalance, ClosingBalance, LedgerPhone, Email, LedgerContact, CountryName, LedgerStateName, PriorStateName, PartyGSTIN, GSTRegistrationType, IncomeTaxNumber, IsBillWiseOn, BillCreditPeriod, CreditLimit, LedGSTRegDetails.*</FETCH>
           </COLLECTION>
         </TDLMESSAGE>
       </TDL>
@@ -67,12 +67,14 @@ const listGroupsTemplate = `<ENVELOPE>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
         {{if .Company}}<SVCURRENTCOMPANY>{{.Company}}</SVCURRENTCOMPANY>{{end}}
+        {{if .FromDate}}<SVFROMDATE>{{.FromDate}}</SVFROMDATE>{{end}}
+        {{if .ToDate}}<SVTODATE>{{.ToDate}}</SVTODATE>{{end}}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
           <COLLECTION NAME="GroupColl" ISMODIFY="No" ISFIXED="No">
             <TYPE>Group</TYPE>
-            <FETCH>Name, Parent</FETCH>
+            <FETCH>Name, Parent, OpeningBalance, ClosingBalance</FETCH>
           </COLLECTION>
         </TDLMESSAGE>
       </TDL>
@@ -98,7 +100,7 @@ const getLedgerTemplate = `<ENVELOPE>
           <COLLECTION NAME="SingleLedgerColl" ISMODIFY="No">
             <TYPE>Ledger</TYPE>
             <FILTER>LedgerFilter</FILTER>
-            <FETCH>Name, Parent, OpeningBalance, ClosingBalance, LedgerPhone, Email, LedgerContact, CountryName, LedgerStateName, PartyGSTIN, CreditLimit, Address</FETCH>
+            <FETCH>Name, Parent, OpeningBalance, ClosingBalance, LedgerPhone, Email, LedgerContact, CountryName, LedgerStateName, PriorStateName, PartyGSTIN, GSTRegistrationType, IncomeTaxNumber, IsBillWiseOn, BillCreditPeriod, CreditLimit, Address, LedGSTRegDetails.*, BillAllocations.*</FETCH>
           </COLLECTION>
           <SYSTEM TYPE="Formulae" NAME="LedgerFilter">$Name = "{{.LedgerName}}"</SYSTEM>
         </TDLMESSAGE>
@@ -181,7 +183,7 @@ const ledgerVouchersTemplate = `<ENVELOPE>
           <COLLECTION NAME="LedgerStatementColl">
             <TYPE>Voucher</TYPE>
             <FILTER>LedgerMatchFilter</FILTER>
-            <FETCH>Date, VoucherTypeName, VoucherNumber, Reference, PartyLedgerName, Narration, MasterId, AllLedgerEntries.*</FETCH>
+            <FETCH>Date, VoucherTypeName, VoucherNumber, Reference, PartyLedgerName, Narration, MasterId, AllLedgerEntries.*, LedgerEntries.*</FETCH>
           </COLLECTION>
           <SYSTEM TYPE="Formulae" NAME="LedgerMatchFilter">
             $LedgerEntries[1, @@IsLedgerMatch].LedgerName = "{{.LedgerName}}" OR $AllLedgerEntries[1, @@IsLedgerMatch].LedgerName = "{{.LedgerName}}"
@@ -343,7 +345,7 @@ const dayBookTemplate = `<ENVELOPE>
   </BODY>
 </ENVELOPE>`
 
-const createLedgerTemplate = `<ENVELOPE>
+const mutateLedgerTemplate = `<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Import</TALLYREQUEST>
@@ -358,10 +360,38 @@ const createLedgerTemplate = `<ENVELOPE>
     </DESC>
     <DATA>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <LEDGER NAME="{{.Name}}" ACTION="Create">
-          <NAME>{{.Name}}</NAME>
-          <PARENT>{{.Parent}}</PARENT>
-          <OPENINGBALANCE>{{.OpeningBalance}}</OPENINGBALANCE>
+        <LEDGER NAME="{{.TargetNameAttr}}" ACTION="{{.Action}}">
+          <NAME>{{.NewName}}</NAME>
+          {{if .Parent}}<PARENT>{{.Parent}}</PARENT>{{end}}
+          {{if .HasOpeningBalance}}<OPENINGBALANCE>{{printf "%.2f" .OpeningBalance}}</OPENINGBALANCE>{{end}}
+          {{if .HasState}}<LEDGERSTATENAME>{{.State}}</LEDGERSTATENAME><PRIORSTATENAME>{{.State}}</PRIORSTATENAME>{{end}}
+          {{if .HasCountry}}<COUNTRYNAME>{{.Country}}</COUNTRYNAME>{{end}}
+          {{if .HasPAN}}<INCOMETAXNUMBER>{{.PAN}}</INCOMETAXNUMBER>{{end}}
+          {{if .HasGSTIN}}<PARTYGSTIN>{{.GSTIN}}</PARTYGSTIN>{{end}}
+          {{if .HasGSTRegType}}<GSTREGISTRATIONTYPE>{{.GSTRegistrationType}}</GSTREGISTRATIONTYPE>{{end}}
+          {{if or .HasGSTIN .HasGSTRegType}}
+          <LEDGSTREGDETAILS.LIST>
+            <APPLICABLEFROM>20170701</APPLICABLEFROM>
+            {{if .HasGSTRegType}}<GSTREGISTRATIONTYPE>{{.GSTRegistrationType}}</GSTREGISTRATIONTYPE>{{end}}
+            {{if .HasGSTIN}}<GSTIN>{{.GSTIN}}</GSTIN>{{end}}
+          </LEDGSTREGDETAILS.LIST>
+          {{end}}
+          {{if .HasBillWise}}<ISBILLWISEON>{{if .MaintainBillByBill}}Yes{{else}}No{{end}}</ISBILLWISEON>{{end}}
+          {{if .HasCreditPeriod}}<BILLCREDITPERIOD>{{.CreditPeriod}}</BILLCREDITPERIOD>{{end}}
+          {{if .HasAddress}}
+          <ADDRESS.LIST TYPE="String">
+            {{range .Address}}<ADDRESS>{{.}}</ADDRESS>{{end}}
+          </ADDRESS.LIST>
+          {{end}}
+          {{if .ReplaceOpeningBills}}
+          {{range .OpeningBills}}
+          <BILLALLOCATIONS.LIST>
+            <NAME>{{.Name}}</NAME>
+            {{if .BillType}}<BILLTYPE>{{.BillType}}</BILLTYPE>{{end}}
+            <AMOUNT>{{printf "%.2f" .Amount}}</AMOUNT>
+          </BILLALLOCATIONS.LIST>
+          {{end}}
+          {{end}}
         </LEDGER>
       </TALLYMESSAGE>
     </DATA>
@@ -457,8 +487,15 @@ func BuildListLedgersXMLWithDates(company, group, fromDate, toDate string) (stri
 
 // BuildListGroupsXML generates the XML for exporting account group hierarchy.
 func BuildListGroupsXML(company string) (string, error) {
+	return BuildListGroupsXMLWithDates(company, "", "")
+}
+
+// BuildListGroupsXMLWithDates generates the XML for exporting account groups with optional date bounds.
+func BuildListGroupsXMLWithDates(company, fromDate, toDate string) (string, error) {
 	return executeTemplate("listGroups", listGroupsTemplate, map[string]string{
-		"Company": XMLEscapeText(company),
+		"Company":  XMLEscapeValue(company),
+		"FromDate": CleanDate(fromDate),
+		"ToDate":   CleanDate(toDate),
 	})
 }
 
@@ -721,20 +758,158 @@ func BuildTrialBalanceXML(company, fromDate, toDate string) (string, error) {
 
 // BuildCreateLedgerXML generates the XML for creating a new ledger in Tally.
 func BuildCreateLedgerXML(company, name, parent string, openingBalance float64) (string, error) {
-	cleanName := SanitizeTDLString(name)
-	if cleanName == "" {
+	opts := LedgerWriteOptions{
+		Company:        company,
+		Name:           name,
+		Parent:         parent,
+		OpeningBalance: &openingBalance,
+	}
+	return BuildCreateLedgerXMLWithOptions(opts)
+}
+
+// BuildCreateLedgerXMLWithOptions generates the XML for creating a new ledger with full GST/address/bill-wise fields.
+func BuildCreateLedgerXMLWithOptions(opts LedgerWriteOptions) (string, error) {
+	if strings.TrimSpace(opts.Name) == "" {
 		return "", fmt.Errorf("ledger name cannot be empty")
 	}
-	cleanParent := SanitizeTDLString(parent)
-	if cleanParent == "" {
+	if strings.TrimSpace(opts.Parent) == "" {
 		return "", fmt.Errorf("parent group cannot be empty")
 	}
-	return executeTemplate("createLedger", createLedgerTemplate, map[string]any{
-		"Company":        XMLEscapeText(company),
-		"Name":           XMLEscapeAttr(cleanName),
-		"Parent":         XMLEscapeText(cleanParent),
-		"OpeningBalance": openingBalance,
+	return buildLedgerMutationXML("Create", opts)
+}
+
+// BuildUpdateLedgerXML generates the XML for altering or renaming an existing ledger in Tally.
+func BuildUpdateLedgerXML(opts LedgerWriteOptions) (string, error) {
+	if strings.TrimSpace(opts.Name) == "" {
+		return "", fmt.Errorf("ledger name cannot be empty")
+	}
+	return buildLedgerMutationXML("Alter", opts)
+}
+
+// BuildDeleteLedgerXML generates the XML for deleting an empty, unused ledger in Tally.
+func BuildDeleteLedgerXML(company, name string) (string, error) {
+	if strings.TrimSpace(name) == "" {
+		return "", fmt.Errorf("ledger name cannot be empty")
+	}
+	return buildLedgerMutationXML("Delete", LedgerWriteOptions{
+		Company: company,
+		Name:    name,
 	})
+}
+
+func buildLedgerMutationXML(action string, opts LedgerWriteOptions) (string, error) {
+	targetName := strings.TrimSpace(ctrlCharRegex.ReplaceAllString(opts.Name, ""))
+	if targetName == "" {
+		return "", fmt.Errorf("ledger name cannot be empty")
+	}
+	newName := strings.TrimSpace(ctrlCharRegex.ReplaceAllString(opts.NewName, ""))
+	if newName == "" {
+		newName = targetName
+	}
+
+	var gstinVal string
+	hasGSTIN := false
+	if opts.GSTIN != nil {
+		cleaned, err := ValidateGSTIN(*opts.GSTIN)
+		if err != nil {
+			return "", err
+		}
+		gstinVal = cleaned
+		hasGSTIN = true
+	}
+
+	var gstRegType string
+	hasGSTRegType := false
+	if opts.GSTRegistrationType != nil {
+		gstRegType = strings.TrimSpace(*opts.GSTRegistrationType)
+		hasGSTRegType = gstRegType != ""
+	}
+	if hasGSTIN && gstinVal != "" && !hasGSTRegType {
+		gstRegType = "Regular"
+		hasGSTRegType = true
+	}
+
+	var stateVal string
+	hasState := false
+	if opts.State != nil {
+		stateVal = strings.TrimSpace(*opts.State)
+		hasState = stateVal != ""
+	}
+
+	var countryVal string
+	hasCountry := false
+	if opts.Country != nil {
+		countryVal = strings.TrimSpace(*opts.Country)
+		hasCountry = countryVal != ""
+	}
+
+	var panVal string
+	hasPAN := false
+	if opts.PAN != nil {
+		panVal = strings.ToUpper(strings.TrimSpace(*opts.PAN))
+		hasPAN = true
+	}
+
+	var creditPeriodVal string
+	hasCreditPeriod := false
+	if opts.CreditPeriod != nil {
+		creditPeriodVal = strings.TrimSpace(*opts.CreditPeriod)
+		hasCreditPeriod = true
+	}
+
+	escapedAddr := make([]string, 0, len(opts.Address))
+	for _, line := range opts.Address {
+		if trimmed := XMLEscapeValue(line); trimmed != "" {
+			escapedAddr = append(escapedAddr, trimmed)
+		}
+	}
+
+	type xmlOpeningBill struct {
+		Name     string
+		BillType string
+		Amount   float64
+	}
+	escapedBills := make([]xmlOpeningBill, 0, len(opts.OpeningBills))
+	for _, b := range opts.OpeningBills {
+		escapedBills = append(escapedBills, xmlOpeningBill{
+			Name:     XMLEscapeValue(b.Name),
+			BillType: XMLEscapeValue(b.BillType),
+			Amount:   round2(b.Amount),
+		})
+	}
+
+	data := map[string]any{
+		"Action":              XMLEscapeAttr(action),
+		"Company":             XMLEscapeValue(opts.Company),
+		"TargetNameAttr":      XMLEscapeAttr(targetName),
+		"NewName":             XMLEscapeValue(newName),
+		"Parent":              XMLEscapeValue(opts.Parent),
+		"HasOpeningBalance":   opts.OpeningBalance != nil,
+		"OpeningBalance":      0.0,
+		"HasState":            hasState,
+		"State":               XMLEscapeValue(stateVal),
+		"HasCountry":          hasCountry,
+		"Country":             XMLEscapeValue(countryVal),
+		"HasPAN":              hasPAN,
+		"PAN":                 XMLEscapeValue(panVal),
+		"HasGSTIN":            hasGSTIN,
+		"GSTIN":               XMLEscapeValue(gstinVal),
+		"HasGSTRegType":       hasGSTRegType,
+		"GSTRegistrationType": XMLEscapeValue(gstRegType),
+		"HasBillWise":         opts.MaintainBillByBill != nil,
+		"MaintainBillByBill":  opts.MaintainBillByBill != nil && *opts.MaintainBillByBill,
+		"HasCreditPeriod":     hasCreditPeriod,
+		"CreditPeriod":        XMLEscapeValue(creditPeriodVal),
+		"HasAddress":          opts.HasAddress && len(escapedAddr) > 0,
+		"Address":             escapedAddr,
+		"ReplaceOpeningBills": opts.ReplaceOpeningBills,
+		"OpeningBills":        escapedBills,
+	}
+	if opts.OpeningBalance != nil {
+		data["OpeningBalance"] = round2(*opts.OpeningBalance)
+	}
+
+	return executeTemplate("mutateLedger", mutateLedgerTemplate, data)
 }
 
 const createVoucherTemplate = `<ENVELOPE>
@@ -771,6 +946,16 @@ const createVoucherTemplate = `<ENVELOPE>
                 <BILLTYPE>{{.BillType}}</BILLTYPE>
                 <AMOUNT>{{printf "%.2f" .Amount}}</AMOUNT>
               </BILLALLOCATIONS.LIST>
+              {{end}}
+              {{range .BankAllocations}}
+              <BANKALLOCATIONS.LIST>
+                {{if .PaymentFavouring}}<PAYMENTFAVOURING>{{.PaymentFavouring}}</PAYMENTFAVOURING>{{end}}
+                {{if .TransactionType}}<TRANSACTIONTYPE>{{.TransactionType}}</TRANSACTIONTYPE>{{end}}
+                {{if .InstrumentNumber}}<INSTRUMENTNUMBER>{{.InstrumentNumber}}</INSTRUMENTNUMBER>{{end}}
+                {{if .InstrumentDate}}<INSTRUMENTDATE>{{.InstrumentDate}}</INSTRUMENTDATE>{{end}}
+                {{if .BankersDate}}<BANKERSDATE>{{.BankersDate}}</BANKERSDATE>{{end}}
+                {{if ne .Amount 0.0}}<AMOUNT>{{printf "%.2f" .Amount}}</AMOUNT>{{end}}
+              </BANKALLOCATIONS.LIST>
               {{end}}
             </ALLLEDGERENTRIES.LIST>
             {{end}}
@@ -819,7 +1004,7 @@ func buildVoucherActionXML(company, action, masterID, voucherType, date, voucher
 	if cleanDate == "" {
 		return "", fmt.Errorf("date cannot be empty")
 	}
-	if !isCancelled && len(entries) < 2 {
+	if !isCancelled && !strings.EqualFold(strings.TrimSpace(action), "Delete") && len(entries) < 2 {
 		return "", fmt.Errorf("at least 2 ledger entries are required")
 	}
 
@@ -828,27 +1013,52 @@ func buildVoucherActionXML(company, action, masterID, voucherType, date, voucher
 		BillType string
 		Amount   float64
 	}
+	type xmlBank struct {
+		PaymentFavouring string
+		TransactionType  string
+		InstrumentNumber string
+		InstrumentDate   string
+		BankersDate      string
+		Amount           float64
+	}
 	type xmlEntry struct {
 		LedgerName       string
 		IsDeemedPositive string
 		Amount           float64
 		BillAllocations  []xmlBill
+		BankAllocations  []xmlBank
 	}
 	escapedEntries := make([]xmlEntry, 0, len(entries))
 	for _, e := range entries {
 		var bills []xmlBill
 		for _, b := range e.BillAllocations {
+			bName := strings.TrimSpace(b.Name)
+			if bName == "" {
+				bName = strings.TrimSpace(b.BillName)
+			}
 			bills = append(bills, xmlBill{
-				Name:     XMLEscapeText(SanitizeTDLString(b.Name)),
-				BillType: XMLEscapeText(SanitizeTDLString(b.BillType)),
+				Name:     XMLEscapeValue(bName),
+				BillType: XMLEscapeValue(b.BillType),
 				Amount:   b.Amount,
 			})
 		}
+		var banks []xmlBank
+		for _, bk := range e.BankAllocations {
+			banks = append(banks, xmlBank{
+				PaymentFavouring: XMLEscapeValue(bk.PaymentFavouring),
+				TransactionType:  XMLEscapeValue(bk.TransactionType),
+				InstrumentNumber: XMLEscapeValue(bk.InstrumentNumber),
+				InstrumentDate:   XMLEscapeValue(bk.InstrumentDate),
+				BankersDate:      XMLEscapeValue(bk.BankersDate),
+				Amount:           bk.Amount,
+			})
+		}
 		escapedEntries = append(escapedEntries, xmlEntry{
-			LedgerName:       XMLEscapeText(SanitizeTDLString(e.LedgerName)),
+			LedgerName:       XMLEscapeValue(e.LedgerName),
 			IsDeemedPositive: e.IsDeemedPositive,
 			Amount:           e.Amount,
 			BillAllocations:  bills,
+			BankAllocations:  banks,
 		})
 	}
 
@@ -865,14 +1075,14 @@ func buildVoucherActionXML(company, action, masterID, voucherType, date, voucher
 	escapedInv := make([]xmlInv, 0, len(inventoryEntries))
 	for _, inv := range inventoryEntries {
 		escapedInv = append(escapedInv, xmlInv{
-			StockItemName:    XMLEscapeText(SanitizeTDLString(inv.StockItemName)),
+			StockItemName:    XMLEscapeValue(inv.StockItemName),
 			IsDeemedPositive: inv.IsDeemedPositive,
-			Rate:             XMLEscapeText(SanitizeTDLString(inv.Rate)),
-			BilledQty:        XMLEscapeText(SanitizeTDLString(inv.BilledQty)),
-			ActualQty:        XMLEscapeText(SanitizeTDLString(inv.ActualQty)),
+			Rate:             XMLEscapeValue(inv.Rate),
+			BilledQty:        XMLEscapeValue(inv.BilledQty),
+			ActualQty:        XMLEscapeValue(inv.ActualQty),
 			Amount:           inv.Amount,
-			GodownName:       XMLEscapeText(SanitizeTDLString(inv.GodownName)),
-			BatchName:        XMLEscapeText(SanitizeTDLString(inv.BatchName)),
+			GodownName:       XMLEscapeValue(inv.GodownName),
+			BatchName:        XMLEscapeValue(inv.BatchName),
 		})
 	}
 
@@ -882,17 +1092,17 @@ func buildVoucherActionXML(company, action, masterID, voucherType, date, voucher
 	}
 
 	return executeTemplate("createVoucher", createVoucherTemplate, map[string]any{
-		"Company":          XMLEscapeText(company),
+		"Company":          XMLEscapeValue(company),
 		"Action":           XMLEscapeAttr(action),
-		"MasterID":         XMLEscapeText(SanitizeTDLString(masterID)),
+		"MasterID":         XMLEscapeValue(SanitizeTDLString(masterID)),
 		"VoucherTypeAttr":  XMLEscapeAttr(cleanType),
-		"VoucherType":      XMLEscapeText(cleanType),
+		"VoucherType":      XMLEscapeValue(cleanType),
 		"ObjView":          objView,
 		"Date":             cleanDate,
-		"VoucherNumber":    XMLEscapeText(SanitizeTDLString(voucherNumber)),
-		"Reference":        XMLEscapeText(SanitizeTDLString(reference)),
-		"PartyLedger":      XMLEscapeText(SanitizeTDLString(partyLedger)),
-		"Narration":        XMLEscapeText(SanitizeTDLString(narration)),
+		"VoucherNumber":    XMLEscapeValue(voucherNumber),
+		"Reference":        XMLEscapeValue(reference),
+		"PartyLedger":      XMLEscapeValue(partyLedger),
+		"Narration":        XMLEscapeValue(narration),
 		"IsCancelled":      isCancelled,
 		"Entries":          escapedEntries,
 		"InventoryEntries": escapedInv,

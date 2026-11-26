@@ -61,45 +61,71 @@ type CompanyItem struct {
 	FormalName      string `xml:"FORMALNAME,omitempty" json:"formal_name,omitempty"`
 	StartingFrom    string `xml:"STARTINGFROM,omitempty" json:"starting_from,omitempty"`
 	BooksFrom       string `xml:"BOOKSFROM,omitempty" json:"books_from,omitempty"`
+	EndingAt        string `xml:"ENDINGAT,omitempty" json:"ending_at,omitempty"`
 	State           string `xml:"STATENAME,omitempty" json:"state,omitempty"`
 	Country         string `xml:"COUNTRYNAME,omitempty" json:"country,omitempty"`
 	Currency        string `xml:"BASECURRENCYNAME,omitempty" json:"currency,omitempty"`
 	IsActiveCompany string `xml:"ISACTIVECOMPANY,omitempty" json:"is_active,omitempty"`
 }
 
+// LedgerGSTRegDetail represents TallyPrime 3.0+ GST registration sub-object entries on a ledger.
+type LedgerGSTRegDetail struct {
+	ApplicableFrom      string `xml:"APPLICABLEFROM,omitempty" json:"applicable_from,omitempty"`
+	GSTRegistrationType string `xml:"GSTREGISTRATIONTYPE,omitempty" json:"gst_registration_type,omitempty"`
+	GSTIN               string `xml:"GSTIN,omitempty" json:"gstin,omitempty"`
+	State               string `xml:"STATE,omitempty" json:"state,omitempty"`
+}
+
 // LedgerItem represents an account ledger in Tally.
 type LedgerItem struct {
-	Name           string  `xml:"NAME,attr" json:"name"`
-	Parent         string  `xml:"PARENT" json:"parent,omitempty"`
-	ParentAttr     string  `xml:"PARENT,attr" json:"-"`
-	OpeningBalance float64 `xml:"OPENINGBALANCE" json:"opening_balance,omitempty"`
-	ClosingBalance float64 `xml:"CLOSINGBALANCE" json:"closing_balance,omitempty"`
-	Phone          string  `xml:"LEDGERPHONE,omitempty" json:"phone,omitempty"`
-	Email          string  `xml:"EMAIL,omitempty" json:"email,omitempty"`
-	Contact        string  `xml:"LEDGERCONTACT,omitempty" json:"contact,omitempty"`
-	State          string  `xml:"LEDGERSTATENAME,omitempty" json:"state,omitempty"`
-	Country        string  `xml:"COUNTRYNAME,omitempty" json:"country,omitempty"`
-	GSTIN          string  `xml:"PARTYGSTIN,omitempty" json:"gstin,omitempty"`
-	CreditLimit    string  `xml:"CREDITLIMIT,omitempty" json:"credit_limit,omitempty"`
+	Name                string               `xml:"NAME,attr" json:"name"`
+	Parent              string               `xml:"PARENT" json:"parent,omitempty"`
+	ParentAttr          string               `xml:"PARENT,attr" json:"-"`
+	OpeningBalance      float64              `xml:"OPENINGBALANCE" json:"opening_balance"`
+	ClosingBalance      float64              `xml:"CLOSINGBALANCE" json:"closing_balance"`
+	Phone               string               `xml:"LEDGERPHONE,omitempty" json:"phone,omitempty"`
+	Email               string               `xml:"EMAIL,omitempty" json:"email,omitempty"`
+	Contact             string               `xml:"LEDGERCONTACT,omitempty" json:"contact,omitempty"`
+	State               string               `xml:"LEDGERSTATENAME,omitempty" json:"state,omitempty"`
+	PriorState          string               `xml:"PRIORSTATENAME,omitempty" json:"-"`
+	Country             string               `xml:"COUNTRYNAME,omitempty" json:"country,omitempty"`
+	GSTIN               string               `xml:"PARTYGSTIN,omitempty" json:"gstin,omitempty"`
+	GSTRegistrationType string               `xml:"GSTREGISTRATIONTYPE,omitempty" json:"gst_registration_type,omitempty"`
+	PAN                 string               `xml:"INCOMETAXNUMBER,omitempty" json:"pan,omitempty"`
+	IsBillWiseOnRaw     string               `xml:"ISBILLWISEON,omitempty" json:"-"`
+	MaintainBillByBill  bool                 `xml:"-" json:"maintain_bill_by_bill"`
+	CreditPeriod        string               `xml:"BILLCREDITPERIOD,omitempty" json:"credit_period,omitempty"`
+	CreditLimit         string               `xml:"CREDITLIMIT,omitempty" json:"credit_limit,omitempty"`
+	LedGSTRegDetails    []LedgerGSTRegDetail `xml:"LEDGSTREGDETAILS.LIST" json:"-"`
+	LedGSTRegDetailsAlt []LedgerGSTRegDetail `xml:"LEDGSTREGDETAILS" json:"-"`
 }
 
 // LedgerDetail represents a clean, flat single-ledger profile without raw Tally XML wrapper boilerplate.
 type LedgerDetail struct {
-	Name           string   `xml:"NAME,attr" json:"name"`
-	Parent         string   `xml:"PARENT" json:"parent,omitempty"`
-	ParentAttr     string   `xml:"PARENT,attr" json:"-"`
-	OpeningBalance float64  `xml:"OPENINGBALANCE" json:"opening_balance,omitempty"`
-	ClosingBalance float64  `xml:"CLOSINGBALANCE" json:"closing_balance,omitempty"`
-	Phone          string   `xml:"LEDGERPHONE,omitempty" json:"phone,omitempty"`
-	Email          string   `xml:"EMAIL,omitempty" json:"email,omitempty"`
-	Contact        string   `xml:"LEDGERCONTACT,omitempty" json:"contact,omitempty"`
-	State          string   `xml:"LEDGERSTATENAME,omitempty" json:"state,omitempty"`
-	Country        string   `xml:"COUNTRYNAME,omitempty" json:"country,omitempty"`
-	GSTIN          string   `xml:"PARTYGSTIN,omitempty" json:"gstin,omitempty"`
-	CreditLimit    string   `xml:"CREDITLIMIT,omitempty" json:"credit_limit,omitempty"`
-	Address        []string `xml:"ADDRESS.LIST>ADDRESS" json:"address,omitempty"`
-	ResolvedFrom   string   `xml:"-" json:"resolved_from,omitempty"`
-	ResolvedLedger string   `xml:"-" json:"resolved_ledger,omitempty"`
+	Name                   string               `xml:"NAME,attr" json:"name"`
+	Parent                 string               `xml:"PARENT" json:"parent,omitempty"`
+	ParentAttr             string               `xml:"PARENT,attr" json:"-"`
+	OpeningBalance         float64              `xml:"OPENINGBALANCE" json:"opening_balance"`
+	ClosingBalance         float64              `xml:"CLOSINGBALANCE" json:"closing_balance"`
+	Phone                  string               `xml:"LEDGERPHONE,omitempty" json:"phone,omitempty"`
+	Email                  string               `xml:"EMAIL,omitempty" json:"email,omitempty"`
+	Contact                string               `xml:"LEDGERCONTACT,omitempty" json:"contact,omitempty"`
+	State                  string               `xml:"LEDGERSTATENAME,omitempty" json:"state,omitempty"`
+	PriorState             string               `xml:"PRIORSTATENAME,omitempty" json:"-"`
+	Country                string               `xml:"COUNTRYNAME,omitempty" json:"country,omitempty"`
+	GSTIN                  string               `xml:"PARTYGSTIN,omitempty" json:"gstin,omitempty"`
+	GSTRegistrationType    string               `xml:"GSTREGISTRATIONTYPE,omitempty" json:"gst_registration_type,omitempty"`
+	PAN                    string               `xml:"INCOMETAXNUMBER,omitempty" json:"pan,omitempty"`
+	IsBillWiseOnRaw        string               `xml:"ISBILLWISEON,omitempty" json:"-"`
+	MaintainBillByBill     bool                 `xml:"-" json:"maintain_bill_by_bill"`
+	CreditPeriod           string               `xml:"BILLCREDITPERIOD,omitempty" json:"credit_period,omitempty"`
+	CreditLimit            string               `xml:"CREDITLIMIT,omitempty" json:"credit_limit,omitempty"`
+	Address                []string             `xml:"ADDRESS.LIST>ADDRESS" json:"address,omitempty"`
+	OpeningBillAllocations []BillAllocation     `xml:"BILLALLOCATIONS.LIST" json:"opening_bill_allocations,omitempty"`
+	LedGSTRegDetails       []LedgerGSTRegDetail `xml:"LEDGSTREGDETAILS.LIST" json:"-"`
+	LedGSTRegDetailsAlt    []LedgerGSTRegDetail `xml:"LEDGSTREGDETAILS" json:"-"`
+	ResolvedFrom           string               `xml:"-" json:"resolved_from,omitempty"`
+	ResolvedLedger         string               `xml:"-" json:"resolved_ledger,omitempty"`
 }
 
 // PartyOverview combines a party's ledger profile, outstanding bills, and recent transactions in a single call.
@@ -135,10 +161,30 @@ type StockItemModel struct {
 
 // CompactLedgerItem provides a lightweight, token-minimized representation of a ledger.
 type CompactLedgerItem struct {
-	Name           string  `json:"name"`
-	Parent         string  `json:"parent,omitempty"`
-	ClosingBalance float64 `json:"balance"`
-	State          string  `json:"state,omitempty"`
+	Name                string  `json:"name"`
+	Parent              string  `json:"parent,omitempty"`
+	State               string  `json:"state,omitempty"`
+	GSTIN               string  `json:"gstin,omitempty"`
+	GSTRegistrationType string  `json:"gst_registration_type,omitempty"`
+	PAN                 string  `json:"pan,omitempty"`
+	OpeningBalance      float64 `json:"opening_balance"`
+	ClosingBalance      float64 `json:"balance"`
+	MaintainBillByBill  bool    `json:"maintain_bill_by_bill"`
+}
+
+// LedgerFilterOptions defines filters and pagination for listing ledgers.
+type LedgerFilterOptions struct {
+	Company     string
+	Group       string
+	Search      string
+	Sort        string
+	GSTIN       string
+	State       string
+	PAN         string
+	NonZeroOnly bool
+	Limit       int
+	Offset      int
+	SummaryOnly bool
 }
 
 // CompactStockItem provides a lightweight, token-minimized representation of an inventory item.
@@ -194,9 +240,24 @@ type PartyBalance struct {
 
 // GroupItem represents an account group hierarchy node in Tally.
 type GroupItem struct {
-	Name       string `xml:"NAME,attr" json:"name"`
-	Parent     string `xml:"PARENT" json:"parent"`
-	ParentAttr string `xml:"PARENT,attr" json:"-"`
+	Name           string  `xml:"NAME,attr" json:"name"`
+	Parent         string  `xml:"PARENT" json:"parent"`
+	ParentAttr     string  `xml:"PARENT,attr" json:"-"`
+	OpeningBalance float64 `xml:"OPENINGBALANCE" json:"opening_balance"`
+	ClosingBalance float64 `xml:"CLOSINGBALANCE" json:"closing_balance"`
+}
+
+// GroupSummaryResult summarizes a Tally group's balances, child sub-groups, and child ledgers.
+type GroupSummaryResult struct {
+	Company        string       `json:"company,omitempty"`
+	Group          string       `json:"group"`
+	Parent         string       `json:"parent,omitempty"`
+	OpeningBalance float64      `json:"opening_balance"`
+	ClosingBalance float64      `json:"closing_balance"`
+	SubGroupsCount int          `json:"sub_groups_count"`
+	SubGroups      []GroupItem  `json:"sub_groups,omitempty"`
+	LedgersCount   int          `json:"ledgers_count"`
+	Ledgers        []LedgerItem `json:"ledgers,omitempty"`
 }
 
 // ImportResult represents parsed Tally XML import status counts.
@@ -287,22 +348,27 @@ type LedgerEntryRecord struct {
 
 // LedgerStatementEntry represents a single transaction entry in a ledger statement.
 type LedgerStatementEntry struct {
-	Date          string  `json:"date"`
-	VoucherType   string  `json:"voucher_type,omitempty"`
-	VoucherNumber string  `json:"voucher_number,omitempty"`
-	ContraLedger  string  `json:"contra_ledger,omitempty"`
-	Debit         float64 `json:"debit,omitempty"`
-	Credit        float64 `json:"credit,omitempty"`
-	Balance       float64 `json:"balance"`
-	BalanceType   string  `json:"balance_type,omitempty"`
-	Narration     string  `json:"narration,omitempty"`
+	MasterID       string  `json:"master_id,omitempty"`
+	Date           string  `json:"date"`
+	VoucherType    string  `json:"voucher_type,omitempty"`
+	VoucherNumber  string  `json:"voucher_number,omitempty"`
+	Reference      string  `json:"reference,omitempty"`
+	ContraLedger   string  `json:"contra_ledger,omitempty"`
+	Debit          float64 `json:"debit,omitempty"`
+	Credit         float64 `json:"credit,omitempty"`
+	RunningBalance float64 `json:"running_balance"`
+	Balance        float64 `json:"balance"`
+	BalanceType    string  `json:"balance_type,omitempty"`
+	Narration      string  `json:"narration,omitempty"`
 }
 
 // CompactStatementEntry merges debit/credit into a single signed amount (negative=Dr, positive=Cr) to save one column per row.
 type CompactStatementEntry struct {
+	MasterID      string  `json:"master_id,omitempty"`
 	Date          string  `json:"date"`
 	VoucherType   string  `json:"voucher_type,omitempty"`
 	VoucherNumber string  `json:"voucher_number,omitempty"`
+	Reference     string  `json:"reference,omitempty"`
 	ContraLedger  string  `json:"contra_ledger,omitempty"`
 	Amount        float64 `json:"amount"`
 	Balance       float64 `json:"balance"`
@@ -450,6 +516,7 @@ type ServerStatus struct {
 // BillAllocationInput represents a bill-by-bill reference (Agst Ref, New Ref, Advance, On Account) on a voucher entry.
 type BillAllocationInput struct {
 	Name     string  `json:"name"`
+	BillName string  `json:"bill_name,omitempty"`
 	BillType string  `json:"bill_type,omitempty"` // "Agst Ref", "New Ref", "Advance", "On Account"
 	Amount   float64 `json:"amount"`
 }
@@ -475,6 +542,7 @@ type VoucherEntryInput struct {
 	IsDebit          bool                  `json:"is_debit"`
 	IsDeemedPositive string                `json:"-"`
 	BillAllocations  []BillAllocationInput `json:"bill_allocations,omitempty"`
+	BankAllocations  []BankAllocation      `json:"bank_allocations,omitempty"`
 }
 
 // CreateVoucherResult represents the preview or creation result of tally_create_voucher.
@@ -624,4 +692,136 @@ type SalesAnalyticsResult struct {
 	TotalAmount   float64              `json:"total_amount"`
 	TopParties    []AnalyticsPartyRank `json:"top_parties"`
 	TopItems      []AnalyticsItemRank  `json:"top_items,omitempty"`
+}
+
+// LedgerWriteOptions holds typed, validated parameters for creating or updating a ledger master.
+type LedgerWriteOptions struct {
+	Company             string
+	Name                string
+	NewName             string
+	Parent              string
+	OpeningBalance      *float64
+	State               *string
+	Country             *string
+	GSTIN               *string
+	GSTRegistrationType *string
+	PAN                 *string
+	Address             []string
+	HasAddress          bool
+	MaintainBillByBill  *bool
+	CreditPeriod        *string
+	OpeningBills        []BillAllocation
+	ReplaceOpeningBills bool
+}
+
+// LedgerMutationResult describes the outcome (or dry-run preview) of creating or updating a ledger.
+type LedgerMutationResult struct {
+	Status  string        `json:"status"` // "preview", "created", "updated"
+	DryRun  bool          `json:"dry_run,omitempty"`
+	Company string        `json:"company,omitempty"`
+	Ledger  string        `json:"ledger"`
+	Before  *LedgerDetail `json:"before,omitempty"`
+	After   *LedgerDetail `json:"after,omitempty"`
+	Changes []string      `json:"changes,omitempty"`
+	Hint    string        `json:"hint,omitempty"`
+}
+
+// DeleteLedgerResult describes the outcome (or dry-run preview) of deleting a ledger.
+type DeleteLedgerResult struct {
+	Status         string        `json:"status"` // "preview", "deleted"
+	DryRun         bool          `json:"dry_run,omitempty"`
+	Company        string        `json:"company,omitempty"`
+	Ledger         string        `json:"ledger"`
+	CanDelete      bool          `json:"can_delete"`
+	VoucherCount   int           `json:"voucher_count"`
+	OpeningBalance float64       `json:"opening_balance"`
+	ClosingBalance float64       `json:"closing_balance"`
+	BookSpan       string        `json:"book_span,omitempty"`
+	Before         *LedgerDetail `json:"before,omitempty"`
+	Hint           string        `json:"hint,omitempty"`
+}
+
+// MergeLedgersResult describes the preview or executed outcome of a composite safe ledger merge.
+type MergeLedgersResult struct {
+	Status                       string   `json:"status"` // "preview", "merged"
+	DryRun                       bool     `json:"dry_run"`
+	Company                      string   `json:"company,omitempty"`
+	SourceLedger                 string   `json:"source_ledger"`
+	TargetLedger                 string   `json:"target_ledger"`
+	RequireSameGSTIN             bool     `json:"require_same_gstin"`
+	SourceGSTIN                  string   `json:"source_gstin,omitempty"`
+	TargetGSTIN                  string   `json:"target_gstin,omitempty"`
+	VoucherCount                 int      `json:"voucher_count"`
+	AlteredVouchers              int      `json:"altered_vouchers,omitempty"`
+	AffectedMasterIDs            []string `json:"affected_master_ids,omitempty"`
+	DateSpan                     string   `json:"date_span,omitempty"`
+	OpeningBalanceDelta          float64  `json:"opening_balance_delta"`
+	OpeningBillsMoved            int      `json:"opening_bills_moved,omitempty"`
+	SourceClosingBalance         float64  `json:"source_closing_balance"`
+	TargetClosingBalanceBefore   float64  `json:"target_closing_balance_before"`
+	ExpectedTargetClosingBalance float64  `json:"expected_target_closing_balance"`
+	VerifiedTargetClosingBalance *float64 `json:"verified_target_closing_balance,omitempty"`
+	SourceDeleted                bool     `json:"source_deleted"`
+	Hint                         string   `json:"hint,omitempty"`
+}
+
+// ReclassifyLedgerSpec specifies a ledger replacement within an existing voucher's entries.
+type ReclassifyLedgerSpec struct {
+	FromLedger      string                `json:"from_ledger"`
+	ToLedger        string                `json:"to_ledger"`
+	BillAllocations []BillAllocationInput `json:"bill_allocations,omitempty"`
+}
+
+// UpdateVoucherOptions holds parameters for targeted voucher edits (tally_update_voucher / tally_alter_voucher).
+type UpdateVoucherOptions struct {
+	Company          string
+	MasterID         string
+	VoucherNumber    string
+	VoucherType      string
+	Date             string
+	NewDate          string
+	NewVoucherNumber string
+	Reference        string
+	HasReference     bool
+	PartyLedger      string
+	Narration        string
+	HasNarration     bool
+	Entries          []VoucherEntryInput
+	Reclassify       *ReclassifyLedgerSpec
+	DryRun           bool
+}
+
+// VoucherSnapshot summarizes a voucher's state before or after an edit/delete.
+type VoucherSnapshot struct {
+	MasterID      string              `json:"master_id,omitempty"`
+	VoucherType   string              `json:"voucher_type"`
+	VoucherNumber string              `json:"voucher_number,omitempty"`
+	Date          string              `json:"date"`
+	Reference     string              `json:"reference,omitempty"`
+	PartyLedger   string              `json:"party_ledger,omitempty"`
+	Narration     string              `json:"narration,omitempty"`
+	TotalDebit    float64             `json:"total_debit"`
+	TotalCredit   float64             `json:"total_credit"`
+	Entries       []VoucherEntryInput `json:"entries,omitempty"`
+}
+
+// UpdateVoucherResult describes the preview or applied outcome of tally_update_voucher.
+type UpdateVoucherResult struct {
+	Status   string           `json:"status"` // "preview", "updated"
+	DryRun   bool             `json:"dry_run"`
+	Company  string           `json:"company,omitempty"`
+	MasterID string           `json:"master_id,omitempty"`
+	Before   *VoucherSnapshot `json:"before,omitempty"`
+	After    *VoucherSnapshot `json:"after,omitempty"`
+	Hint     string           `json:"hint,omitempty"`
+}
+
+// DeleteVoucherResult describes the preview or applied outcome of tally_delete_voucher.
+type DeleteVoucherResult struct {
+	Status   string           `json:"status"` // "preview", "deleted"
+	DryRun   bool             `json:"dry_run"`
+	Company  string           `json:"company,omitempty"`
+	MasterID string           `json:"master_id"`
+	Voucher  *VoucherSnapshot `json:"voucher,omitempty"`
+	Hint     string           `json:"hint,omitempty"`
 }

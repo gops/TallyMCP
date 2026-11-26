@@ -66,7 +66,10 @@ func (c *Client) CreateVoucherForCompany(
 		for bi, b := range e.BillAllocations {
 			bName := strings.TrimSpace(b.Name)
 			if bName == "" {
-				return nil, fmt.Errorf("entry[%d].bill_allocations[%d] name cannot be empty", i, bi)
+				bName = strings.TrimSpace(b.BillName)
+			}
+			if bName == "" {
+				return nil, fmt.Errorf("entry[%d].bill_allocations[%d] name/bill_name cannot be empty", i, bi)
 			}
 			if b.Amount == 0 {
 				return nil, fmt.Errorf("entry[%d].bill_allocations[%d] (%s) amount cannot be 0", i, bi, bName)
@@ -146,7 +149,7 @@ func (c *Client) CreateVoucherForCompany(
 			return nil, fmt.Errorf("party_ledger: %w", pErr)
 		}
 		resolvedParty = pName
-	} else {
+	} else if !strings.EqualFold(vType, "Contra") && !strings.EqualFold(vType, "Journal") {
 		resolvedParty = resolvedEntries[0].LedgerName
 	}
 
@@ -201,7 +204,15 @@ func (c *Client) CreateVoucherForCompany(
 	}
 
 	if preview {
-		result.Hint = "Dry-run preview succeeded. Re-call tally_create_voucher with preview=false to post this voucher to Tally."
+		result.Hint = "Dry-run preview succeeded. Re-call tally_create_voucher with preview=false (or dry_run=false) to post this voucher to Tally."
+		c.emitAudit(AuditEntry{
+			Company:         company,
+			Operation:       "create_voucher",
+			DryRun:          true,
+			Status:          "preview",
+			AffectedLedgers: collectEntryLedgerNames(resolvedEntries),
+			After:           result,
+		})
 		return result, nil
 	}
 
@@ -218,6 +229,14 @@ func (c *Client) CreateVoucherForCompany(
 	c.InvalidateCache("vouchers:")
 	c.InvalidateCache("ledgers:")
 	result.Status = "created"
+	c.emitAudit(AuditEntry{
+		Company:         company,
+		Operation:       "create_voucher",
+		DryRun:          false,
+		Status:          "applied",
+		AffectedLedgers: collectEntryLedgerNames(resolvedEntries),
+		After:           result,
+	})
 	return result, nil
 }
 

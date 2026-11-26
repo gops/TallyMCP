@@ -92,6 +92,7 @@ func (s *Server) registerTools() {
 			mcp.WithDescription("Check Tally connection and loaded companies; optionally start Tally."),
 			mcp.WithReadOnlyHintAnnotation(true),
 			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Optional target company to validate against loaded companies")),
 			mcp.WithBoolean("start_if_stopped", mcp.Description("Start Tally automatically if stopped")),
 			mcp.WithNumber("wait_seconds", mcp.Description("Max seconds to wait on start (default 30)")),
 		),
@@ -124,17 +125,21 @@ func (s *Server) registerTools() {
 	// 4. tally_list_ledgers
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_list_ledgers",
-			mcp.WithDescription("List ledgers (customers, vendors, bank, cash) with group aliases, search, sort, and pagination."),
+			mcp.WithDescription("List ledgers with state, GSTIN, GST reg type, PAN, opening/closing balances, and bill-wise flags; supports filters, search, sort, and pagination."),
 			mcp.WithReadOnlyHintAnnotation(true),
 			mcp.WithIdempotentHintAnnotation(true),
 			mcp.WithString("company", mcp.Description("Target company")),
 			mcp.WithString("group", mcp.Description("Group or alias (e.g. 'customers', 'vendors', 'Bank Accounts')")),
 			mcp.WithString("search", mcp.Description("Case-insensitive substring filter")),
+			mcp.WithString("gstin", mcp.Description("Filter by GSTIN substring")),
+			mcp.WithString("state", mcp.Description("Filter by state substring")),
+			mcp.WithString("pan", mcp.Description("Filter by PAN substring")),
+			mcp.WithBoolean("non_zero_only", mcp.Description("Only return ledgers with non-zero opening or closing balance")),
 			mcp.WithString("sort", mcp.Enum("balance_desc", "balance_asc", "name_asc"), mcp.Description("Sort order")),
 			mcp.WithNumber("limit", mcp.Description("Page size (default 25, max 250)")),
 			mcp.WithNumber("offset", mcp.Description("Zero-based offset")),
 			mcp.WithBoolean("summary_only", mcp.Description("Compact fields only (default true)")),
-			mcp.WithString("fields", mcp.Description("Comma-separated fields to keep (e.g. 'name,balance')")),
+			mcp.WithString("fields", mcp.Description("Comma-separated fields to keep (e.g. 'name,gstin,balance')")),
 		),
 		s.handlers.HandleListLedgers,
 	)
@@ -185,6 +190,60 @@ func (s *Server) registerTools() {
 			mcp.WithString("fields", mcp.Description("Comma-separated entry fields to keep")),
 		),
 		s.handlers.HandleGetLedgerStatement,
+	)
+
+	// 6b. tally_get_ledger_vouchers
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_ledger_vouchers",
+			mcp.WithDescription("Fetch full ledger vouchers across any debit/credit line (party, expense, tax, bank, suspense) with master_id, contra ledger, running balance, and opening/closing balances."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("ledger_name", mcp.Required(), mcp.Description("Ledger name (fuzzy matched)")),
+			mcp.WithString("from_date", mcp.Description("Start date (YYYYMMDD/YYYY-MM-DD; default FY start)")),
+			mcp.WithString("to_date", mcp.Description("End date (default FY end)")),
+			mcp.WithNumber("limit", mcp.Description("Page size (default 50, max 500)")),
+			mcp.WithNumber("offset", mcp.Description("Zero-based offset")),
+			mcp.WithString("sort", mcp.Enum("asc", "desc"), mcp.Description("Date sort order (default asc)")),
+			mcp.WithBoolean("summary_only", mcp.Description("Compact mode (default false for full debit/credit + master_id + running_balance)")),
+			mcp.WithNumber("max_narration_len", mcp.Description("Max narration chars when summary_only=true (default 80, 0=full)")),
+			mcp.WithString("fields", mcp.Description("Comma-separated entry fields to keep")),
+		),
+		s.handlers.HandleGetLedgerVouchers,
+	)
+
+	// 6c. tally_list_groups
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_list_groups",
+			mcp.WithDescription("List Tally account group hierarchy (name, parent, opening_balance, closing_balance)."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("parent", mcp.Description("Optional parent group filter")),
+			mcp.WithString("search", mcp.Description("Case-insensitive substring filter")),
+			mcp.WithString("from_date", mcp.Description("Optional start date")),
+			mcp.WithString("to_date", mcp.Description("Optional end date")),
+			mcp.WithBoolean("non_zero_only", mcp.Description("Only return groups with non-zero opening or closing balance")),
+			mcp.WithNumber("limit", mcp.Description("Page size (default 100, max 500)")),
+			mcp.WithNumber("offset", mcp.Description("Zero-based offset")),
+		),
+		s.handlers.HandleListGroups,
+	)
+
+	// 6d. tally_get_group_summary
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_group_summary",
+			mcp.WithDescription("Get group hierarchy balances and child ledgers/sub-groups for any group (e.g. 'Suspense A/c', 'Current Liabilities', 'Duties & Taxes')."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("group", mcp.Required(), mcp.Description("Group name or alias")),
+			mcp.WithString("from_date", mcp.Description("Optional start date")),
+			mcp.WithString("to_date", mcp.Description("Optional end date")),
+			mcp.WithBoolean("include_sub_groups", mcp.Description("Recursively include child sub-groups and their ledgers (default true)")),
+			mcp.WithBoolean("non_zero_only", mcp.Description("Only include non-zero ledgers and sub-groups")),
+		),
+		s.handlers.HandleGetGroupSummary,
 	)
 
 	// 7. tally_list_vouchers
@@ -308,6 +367,46 @@ func (s *Server) registerTools() {
 		s.handlers.HandleGetOutstandings,
 	)
 
+	// 12b. tally_get_outstanding_receivables
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_outstanding_receivables",
+			mcp.WithDescription("Fetch paginated Bills Receivable aging report (bill_date, bill_ref, due_date, overdue_days, pending_amount)."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("party", mcp.Description("Optional party filter (fuzzy matched)")),
+			mcp.WithString("from_date", mcp.Description("Start date")),
+			mcp.WithString("to_date", mcp.Description("End date")),
+			mcp.WithBoolean("overdue_only", mcp.Description("Only overdue bills (overdue_days > 0)")),
+			mcp.WithString("sort", mcp.Enum("overdue_desc", "amount_desc", "amount_asc", "date_asc", "date_desc"), mcp.Description("Sort order")),
+			mcp.WithNumber("min_amount", mcp.Description("Minimum pending amount")),
+			mcp.WithString("search", mcp.Description("Filter by party or bill ref")),
+			mcp.WithNumber("limit", mcp.Description("Page size (default 50, max 250)")),
+			mcp.WithNumber("offset", mcp.Description("Zero-based offset")),
+		),
+		s.handlers.HandleGetOutstandingReceivables,
+	)
+
+	// 12c. tally_get_outstanding_payables
+	s.mcpServer.AddTool(
+		mcp.NewTool("tally_get_outstanding_payables",
+			mcp.WithDescription("Fetch paginated Bills Payable aging report (bill_date, bill_ref, due_date, overdue_days, pending_amount)."),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("company", mcp.Description("Target company")),
+			mcp.WithString("party", mcp.Description("Optional party filter (fuzzy matched)")),
+			mcp.WithString("from_date", mcp.Description("Start date")),
+			mcp.WithString("to_date", mcp.Description("End date")),
+			mcp.WithBoolean("overdue_only", mcp.Description("Only overdue bills (overdue_days > 0)")),
+			mcp.WithString("sort", mcp.Enum("overdue_desc", "amount_desc", "amount_asc", "date_asc", "date_desc"), mcp.Description("Sort order")),
+			mcp.WithNumber("min_amount", mcp.Description("Minimum pending amount")),
+			mcp.WithString("search", mcp.Description("Filter by party or bill ref")),
+			mcp.WithNumber("limit", mcp.Description("Page size (default 50, max 250)")),
+			mcp.WithNumber("offset", mcp.Description("Zero-based offset")),
+		),
+		s.handlers.HandleGetOutstandingPayables,
+	)
+
 	// 13. tally_generate_pdf
 	s.mcpServer.AddTool(
 		mcp.NewTool("tally_generate_pdf",
@@ -330,45 +429,145 @@ func (s *Server) registerTools() {
 		s.handlers.HandleGeneratePDF,
 	)
 
-	// 14. tally_create_ledger (omitted in read_only mode to save schema tokens and prevent failed calls)
+	// 14. Mutating tools (omitted in read_only mode to save schema tokens and prevent failed calls)
 	if !s.cfg.Server.ReadOnly {
 		s.mcpServer.AddTool(
 			mcp.NewTool("tally_create_ledger",
-				mcp.WithDescription("Create a new ledger account in Tally."),
+				mcp.WithDescription("Create a new ledger account in Tally with optional GSTIN, PAN, state, address, and bill-by-bill settings."),
 				mcp.WithReadOnlyHintAnnotation(false),
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(false),
 				mcp.WithString("company", mcp.Description("Target company")),
 				mcp.WithString("name", mcp.Description("Ledger name"), mcp.Required()),
 				mcp.WithString("parent", mcp.Description("Parent group or alias (e.g. 'customers', 'vendors')"), mcp.Required()),
-				mcp.WithNumber("opening_balance", mcp.Description("Optional opening balance")),
+				mcp.WithNumber("opening_balance", mcp.Description("Optional opening balance (negative=Dr, positive=Cr)")),
+				mcp.WithString("state", mcp.Description("State name (e.g. 'Maharashtra')")),
+				mcp.WithString("country", mcp.Description("Country name (e.g. 'India')")),
+				mcp.WithString("gstin", mcp.Description("Optional 15-character GSTIN (validated)")),
+				mcp.WithString("gst_registration_type", mcp.Description("GST registration type (Regular, Composition, Unregistered, Consumer, Overseas, SEZ)")),
+				mcp.WithString("pan", mcp.Description("Optional 10-character PAN (INCOMETAXNUMBER)")),
+				mcp.WithString("address", mcp.Description("Mailing address (newline-separated or array of lines)")),
+				mcp.WithBoolean("maintain_bill_by_bill", mcp.Description("Enable bill-by-bill tracking (ISBILLWISEON)")),
+				mcp.WithString("credit_period", mcp.Description("Default credit period (e.g. '30 Days')")),
+				mcp.WithBoolean("dry_run", mcp.Description("Validate and preview without creating in Tally (default false)")),
 			),
 			s.handlers.HandleCreateLedger,
+		)
+
+		s.mcpServer.AddTool(
+			mcp.NewTool("tally_update_ledger",
+				mcp.WithDescription("Alter an existing ledger (rename via new_name, reclassify parent group, update state/GSTIN/PAN/address/opening_balance/bill-wise). Supports dry_run."),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithString("company", mcp.Description("Target company")),
+				mcp.WithString("name", mcp.Required(), mcp.Description("Existing ledger name")),
+				mcp.WithString("new_name", mcp.Description("Optional new name to rename ledger across Tally (rejected if already exists)")),
+				mcp.WithString("parent", mcp.Description("Optional new parent group or alias")),
+				mcp.WithString("state", mcp.Description("State name")),
+				mcp.WithString("country", mcp.Description("Country name")),
+				mcp.WithString("gstin", mcp.Description("15-character GSTIN (validated)")),
+				mcp.WithString("gst_registration_type", mcp.Description("GST registration type")),
+				mcp.WithString("pan", mcp.Description("PAN (INCOMETAXNUMBER)")),
+				mcp.WithString("address", mcp.Description("Address lines")),
+				mcp.WithNumber("opening_balance", mcp.Description("Opening balance (negative=Dr, positive=Cr)")),
+				mcp.WithBoolean("maintain_bill_by_bill", mcp.Description("Enable/disable bill-by-bill tracking")),
+				mcp.WithString("credit_period", mcp.Description("Default credit period")),
+				mcp.WithBoolean("dry_run", mcp.Description("Preview before/after changes without writing to Tally (default false)")),
+			),
+			s.handlers.HandleUpdateLedger,
+		)
+
+		s.mcpServer.AddTool(
+			mcp.NewTool("tally_delete_ledger",
+				mcp.WithDescription("Safely delete a ledger ONLY after verifying 0 opening/closing balance and 0 vouchers across the company book period. Supports dry_run."),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(true),
+				mcp.WithIdempotentHintAnnotation(false),
+				mcp.WithString("company", mcp.Description("Target company")),
+				mcp.WithString("name", mcp.Required(), mcp.Description("Ledger name to delete")),
+				mcp.WithBoolean("dry_run", mcp.Description("Verify emptiness and preview without deleting (default false)")),
+			),
+			s.handlers.HandleDeleteLedger,
+		)
+
+		s.mcpServer.AddTool(
+			mcp.NewTool("tally_merge_ledgers",
+				mcp.WithDescription("Safely merge source_ledger into target_ledger: verifies GSTINs, migrates all vouchers & opening balances/bills, verifies target closing balance, then deletes source_ledger. Supports dry_run."),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(true),
+				mcp.WithIdempotentHintAnnotation(false),
+				mcp.WithString("company", mcp.Description("Target company")),
+				mcp.WithString("source_ledger", mcp.Required(), mcp.Description("Duplicate/source ledger name to merge and remove")),
+				mcp.WithString("target_ledger", mcp.Required(), mcp.Description("Surviving/target ledger name")),
+				mcp.WithBoolean("require_same_gstin", mcp.Description("Require identical non-empty GSTINs on both ledgers (default true; pass false only for verified missing-GSTIN typos)")),
+				mcp.WithBoolean("dry_run", mcp.Description("Preview merge plan without modifying Tally (default false)")),
+			),
+			s.handlers.HandleMergeLedgers,
 		)
 
 		// 15b. tally_create_voucher (safe preview-by-default voucher creation)
 		s.mcpServer.AddTool(
 			mcp.NewTool("tally_create_voucher",
-				mcp.WithDescription("Create or dry-run preview a Tally voucher (Sales, Purchase, Payment, Receipt, Journal, Contra). Defaults to preview=true; set preview=false to post."),
+				mcp.WithDescription("Create or dry-run preview a Tally voucher (Sales, Purchase, Payment, Receipt, Journal, Contra, Debit Note, Credit Note). Defaults to preview=true; pass preview=false or dry_run=false to post."),
 				mcp.WithReadOnlyHintAnnotation(false),
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(false),
 				mcp.WithString("company", mcp.Description("Target company")),
 				mcp.WithString("voucher_type", mcp.Required(), mcp.Description("Voucher type (Sales, Purchase, Payment, Receipt, Journal, Contra, Credit Note, Debit Note)")),
 				mcp.WithString("date", mcp.Description("Voucher date (YYYYMMDD, YYYY-MM-DD, or 'today', default today)")),
-				mcp.WithString("party_ledger", mcp.Description("Optional party ledger name (fuzzy matched)")),
+				mcp.WithString("party_ledger", mcp.Description("Optional party ledger name (optional for Contra/Journal)")),
 				mcp.WithString("voucher_number", mcp.Description("Optional voucher number")),
 				mcp.WithString("reference", mcp.Description("Optional reference / supplier invoice number")),
 				mcp.WithString("narration", mcp.Description("Optional narration")),
-				mcp.WithArray("entries", mcp.Required(), mcp.Description("Array of {ledger_name, amount, is_debit, bill_allocations:[{name, bill_type, amount}]} objects (must balance: total debit == total credit)")),
+				mcp.WithArray("entries", mcp.Required(), mcp.Description("Array of {ledger_name, amount, is_debit, bill_allocations:[{bill_name, bill_type, amount}]} objects (must balance: total debit == total credit)")),
 				mcp.WithArray("inventory_entries", mcp.Description("Optional array of {stock_item_name, billed_qty, rate, amount, godown_name, batch_name} for item-invoice vouchers")),
 				mcp.WithBoolean("preview", mcp.Description("Dry-run validate, check duplicates & resolve ledgers without posting (default true; pass false to post)")),
+				mcp.WithBoolean("dry_run", mcp.Description("Alias for preview (overrides preview when provided)")),
 				mcp.WithBoolean("allow_duplicate", mcp.Description("Allow posting even if a matching voucher_number or reference+party+date already exists (default false)")),
 			),
 			s.handlers.HandleCreateVoucher,
 		)
 
-		// 15c. tally_alter_voucher
+		// 15c. tally_update_voucher
+		s.mcpServer.AddTool(
+			mcp.NewTool("tally_update_voucher",
+				mcp.WithDescription("Update an existing voucher identified by master_id (date, narration, reference, voucher_number, entries[], or reclassify_ledger). Validates debit==credit and supports dry_run."),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithString("company", mcp.Description("Target company")),
+				mcp.WithString("master_id", mcp.Required(), mcp.Description("Tally internal MasterID of the voucher")),
+				mcp.WithString("new_date", mcp.Description("Optional updated voucher date")),
+				mcp.WithString("voucher_number", mcp.Description("Optional updated voucher number")),
+				mcp.WithString("party_ledger", mcp.Description("Optional updated party ledger")),
+				mcp.WithString("reference", mcp.Description("Optional updated reference")),
+				mcp.WithString("narration", mcp.Description("Optional updated narration")),
+				mcp.WithArray("entries", mcp.Description("Optional replacement entries [{ledger_name, amount, is_debit, bill_allocations}]")),
+				mcp.WithObject("reclassify_ledger", mcp.Description("Optional {from_ledger, to_ledger, bill_allocations} to replace a ledger entry (e.g. Suspense -> customer/expense) and add Agst Ref bills")),
+				mcp.WithString("from_ledger", mcp.Description("Alternative to reclassify_ledger.from_ledger")),
+				mcp.WithString("to_ledger", mcp.Description("Alternative to reclassify_ledger.to_ledger")),
+				mcp.WithArray("bill_allocations", mcp.Description("Optional bill allocations attached when using from_ledger/to_ledger")),
+				mcp.WithBoolean("dry_run", mcp.Description("Preview before/after summary without writing to Tally (default false)")),
+			),
+			s.handlers.HandleUpdateVoucher,
+		)
+
+		// 15d. tally_delete_voucher
+		s.mcpServer.AddTool(
+			mcp.NewTool("tally_delete_voucher",
+				mcp.WithDescription("Delete a single voucher by master_id (supports dry_run=true to inspect full voucher details first)."),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(true),
+				mcp.WithIdempotentHintAnnotation(false),
+				mcp.WithString("company", mcp.Description("Target company")),
+				mcp.WithString("master_id", mcp.Required(), mcp.Description("Tally internal MasterID of the voucher to delete")),
+				mcp.WithBoolean("dry_run", mcp.Description("Preview full voucher details without deleting (default false)")),
+			),
+			s.handlers.HandleDeleteVoucher,
+		)
+
+		// 15e. tally_alter_voucher
 		s.mcpServer.AddTool(
 			mcp.NewTool("tally_alter_voucher",
 				mcp.WithDescription("Alter an existing Tally voucher (narration, date, party, or entries). Defaults to preview=true; pass preview=false to apply."),
@@ -386,11 +585,12 @@ func (s *Server) registerTools() {
 				mcp.WithString("narration", mcp.Description("Optional updated narration")),
 				mcp.WithArray("entries", mcp.Description("Optional replacement entries [{ledger_name, amount, is_debit}] (defaults to existing entries)")),
 				mcp.WithBoolean("preview", mcp.Description("Dry-run validate without modifying Tally (default true)")),
+				mcp.WithBoolean("dry_run", mcp.Description("Alias for preview")),
 			),
 			s.handlers.HandleAlterVoucher,
 		)
 
-		// 15d. tally_cancel_voucher
+		// 15f. tally_cancel_voucher
 		s.mcpServer.AddTool(
 			mcp.NewTool("tally_cancel_voucher",
 				mcp.WithDescription("Cancel an existing Tally voucher (marks ISCANCELLED=Yes). Defaults to preview=true; pass preview=false to cancel."),
@@ -404,11 +604,12 @@ func (s *Server) registerTools() {
 				mcp.WithString("date", mcp.Description("Voucher date to disambiguate")),
 				mcp.WithString("narration", mcp.Description("Optional cancellation reason/narration")),
 				mcp.WithBoolean("preview", mcp.Description("Dry-run validate without cancelling in Tally (default true)")),
+				mcp.WithBoolean("dry_run", mcp.Description("Alias for preview")),
 			),
 			s.handlers.HandleCancelVoucher,
 		)
 
-		// 15e. tally_create_stock_item
+		// 15g. tally_create_stock_item
 		s.mcpServer.AddTool(
 			mcp.NewTool("tally_create_stock_item",
 				mcp.WithDescription("Create a new stock item master in Tally (with unit, HSN, GST rate). Defaults to preview=true; pass preview=false to create."),
@@ -425,6 +626,7 @@ func (s *Server) registerTools() {
 				mcp.WithString("opening_rate", mcp.Description("Optional opening rate (e.g. '500/Nos')")),
 				mcp.WithNumber("opening_value", mcp.Description("Optional opening value")),
 				mcp.WithBoolean("preview", mcp.Description("Dry-run validate & check duplicates without creating (default true)")),
+				mcp.WithBoolean("dry_run", mcp.Description("Alias for preview")),
 			),
 			s.handlers.HandleCreateStockItem,
 		)

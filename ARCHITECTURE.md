@@ -297,7 +297,7 @@ sequenceDiagram
     App->>Disk: Extract tally-mcp.exe to temp folder
     App->>Disk: Rename tally-mcp.exe -> tally-mcp.exe.old (Permitted by NTFS)
     App->>Disk: Move extracted new binary -> tally-mcp.exe
-    App-->>App: On next application launch, purge tally-mcp.exe.old
+    App-->>App: On next application launch, move tally-mcp.exe.old & stale temp files to OS Trash / Recycle Bin
 ```
 
 1. **Semantic Version Negotiation**: Parses SemVer strings, ignoring `v` prefixes, and handles pre-releases cleanly.

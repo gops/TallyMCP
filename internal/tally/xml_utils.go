@@ -223,6 +223,25 @@ func XMLEscapeAttr(s string) string {
 	return s
 }
 
+// XMLEscapeValue escapes all 5 XML special characters (&, <, >, ", ') for safe inclusion in XML data tags and attributes.
+func XMLEscapeValue(s string) string {
+	return XMLEscapeAttr(strings.TrimSpace(s))
+}
+
+var gstinRegex = regexp.MustCompile(`^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$`)
+
+// ValidateGSTIN normalizes and validates an Indian 15-character GSTIN.
+func ValidateGSTIN(gstin string) (string, error) {
+	clean := strings.ToUpper(strings.TrimSpace(gstin))
+	if clean == "" {
+		return "", nil
+	}
+	if !gstinRegex.MatchString(clean) {
+		return "", fmt.Errorf("invalid GSTIN %q: must be a valid 15-character GSTIN (e.g. 27AABCU9603R1ZM)", gstin)
+	}
+	return clean, nil
+}
+
 // SanitizeTDLString cleans a string for safe inclusion in TDL formula string literals.
 // Strips quotes, semicolons (TDL comments), control chars, and newlines.
 func SanitizeTDLString(s string) string {

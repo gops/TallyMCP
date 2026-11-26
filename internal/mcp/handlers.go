@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -127,6 +125,120 @@ func getIntDefault(req mcp.CallToolRequest, key string, defaultVal int) int {
 	return defaultVal
 }
 
+func parseDryRun(req mcp.CallToolRequest, defaultVal bool) bool {
+	args := req.GetArguments()
+	if args != nil {
+		if _, ok := args["dry_run"]; ok {
+			return req.GetBool("dry_run", defaultVal)
+		}
+		if _, ok := args["preview"]; ok {
+			return req.GetBool("preview", defaultVal)
+		}
+	}
+	return defaultVal
+}
+
+func decodeJSONArg[T any](rawVal any) (T, error) {
+	var out T
+	switch v := rawVal.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return out, nil
+		}
+		if err := json.Unmarshal([]byte(v), &out); err != nil {
+			return out, err
+		}
+		return out, nil
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return out, err
+		}
+		if err := json.Unmarshal(b, &out); err != nil {
+			return out, err
+		}
+		return out, nil
+	}
+}
+
+func parseAddressArg(args map[string]any, key string) ([]string, bool) {
+	if args == nil {
+		return nil, false
+	}
+	raw, ok := args[key]
+	if !ok || raw == nil {
+		return nil, false
+	}
+	switch v := raw.(type) {
+	case string:
+		var lines []string
+		for _, part := range strings.Split(strings.ReplaceAll(v, "\r\n", "\n"), "\n") {
+			if t := strings.TrimSpace(part); t != "" {
+				lines = append(lines, t)
+			}
+		}
+		return lines, true
+	case []string:
+		return v, true
+	case []any:
+		var lines []string
+		for _, item := range v {
+			if s := strings.TrimSpace(fmt.Sprintf("%v", item)); s != "" {
+				lines = append(lines, s)
+			}
+		}
+		return lines, true
+	default:
+		return nil, false
+	}
+}
+
+func extractLedgerWriteOptions(req mcp.CallToolRequest, company string) tally.LedgerWriteOptions {
+	args := req.GetArguments()
+	opts := tally.LedgerWriteOptions{
+		Company: company,
+		Name:    req.GetString("name", ""),
+		NewName: req.GetString("new_name", ""),
+		Parent:  req.GetString("parent", ""),
+	}
+	if args != nil {
+		if _, ok := args["opening_balance"]; ok {
+			v := req.GetFloat("opening_balance", 0)
+			opts.OpeningBalance = &v
+		}
+		if _, ok := args["state"]; ok {
+			v := req.GetString("state", "")
+			opts.State = &v
+		}
+		if _, ok := args["country"]; ok {
+			v := req.GetString("country", "")
+			opts.Country = &v
+		}
+		if _, ok := args["gstin"]; ok {
+			v := req.GetString("gstin", "")
+			opts.GSTIN = &v
+		}
+		if _, ok := args["gst_registration_type"]; ok {
+			v := req.GetString("gst_registration_type", "")
+			opts.GSTRegistrationType = &v
+		}
+		if _, ok := args["pan"]; ok {
+			v := req.GetString("pan", "")
+			opts.PAN = &v
+		}
+		if _, ok := args["maintain_bill_by_bill"]; ok {
+			v := req.GetBool("maintain_bill_by_bill", false)
+			opts.MaintainBillByBill = &v
+		}
+		if _, ok := args["credit_period"]; ok {
+			v := req.GetString("credit_period", "")
+			opts.CreditPeriod = &v
+		}
+	}
+	opts.Address, opts.HasAddress = parseAddressArg(args, "address")
+	return opts
+}
+
 func truncateString(s string, maxLen int) string {
 	if maxLen <= 0 || s == "" {
 		return s
@@ -220,6 +332,11 @@ func (h *ToolHandlers) resolveCompany(ctx context.Context, req mcp.CallToolReque
 
 // HandleTallyStatus checks connectivity to Tally ERP.
 func (h *ToolHandlers) HandleTallyStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if rawCompany := strings.TrimSpace(req.GetString("company", "")); rawCompany != "" {
+		if _, _, err := h.tallyClient.ResolveCompany(ctx, rawCompany); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+	}
 	startIfStopped := req.GetBool("start_if_stopped", false)
 	waitSeconds := req.GetInt("wait_seconds", 30)
 
@@ -316,7 +433,19 @@ func (h *ToolHandlers) HandleListLedgers(ctx context.Context, req mcp.CallToolRe
 	}
 
 	sortMode := req.GetString("sort", "")
-	paginated, err := h.tallyClient.FilterLedgersSortedForCompany(ctx, company, group, search, sortMode, limit, offset, summaryOnly)
+	paginated, err := h.tallyClient.FilterLedgersWithOptions(ctx, tally.LedgerFilterOptions{
+		Company:     company,
+		Group:       group,
+		Search:      search,
+		Sort:        sortMode,
+		GSTIN:       req.GetString("gstin", ""),
+		State:       req.GetString("state", ""),
+		PAN:         req.GetString("pan", ""),
+		NonZeroOnly: getBoolDefault(req, "non_zero_only", false),
+		Limit:       limit,
+		Offset:      offset,
+		SummaryOnly: summaryOnly,
+	})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to fetch ledgers: %v", err)), nil
 	}
@@ -440,6 +569,15 @@ func (h *ToolHandlers) HandleGetPartyOverview(ctx context.Context, req mcp.CallT
 
 // HandleGetLedgerStatement retrieves a detailed transaction statement for a specific ledger account.
 func (h *ToolHandlers) HandleGetLedgerStatement(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return h.handleLedgerTransactions(ctx, req, true)
+}
+
+// HandleGetLedgerVouchers fetches all vouchers touching a specific ledger across any debit/credit line with running balances.
+func (h *ToolHandlers) HandleGetLedgerVouchers(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return h.handleLedgerTransactions(ctx, req, false)
+}
+
+func (h *ToolHandlers) handleLedgerTransactions(ctx context.Context, req mcp.CallToolRequest, defaultSummary bool) (*mcp.CallToolResult, error) {
 	company, err := h.resolveCompany(ctx, req)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -453,168 +591,75 @@ func (h *ToolHandlers) HandleGetLedgerStatement(ctx context.Context, req mcp.Cal
 		return mcp.NewToolResultError("Ledger argument 'ledger_name' cannot be empty"), nil
 	}
 
-	resolvedName, correctedFrom, resolveErr := h.tallyClient.ResolveLedgerName(ctx, company, ledgerName)
-	if resolveErr != nil {
-		return mcp.NewToolResultError(resolveErr.Error()), nil
-	}
-	ledgerName = resolvedName
+	limit := req.GetInt("limit", 50)
+	offset := req.GetInt("offset", 0)
+	sortOrder := req.GetString("sort", "asc")
+	summaryOnly := getBoolDefault(req, "summary_only", defaultSummary)
+	maxNarrLen := getIntDefault(req, "max_narration_len", 80)
 
-	rawFrom := req.GetString("from_date", "")
-	rawTo := req.GetString("to_date", "")
-	fromDate, toDate := tally.ResolveDateRange(rawFrom, rawTo, time.Now())
-	if fromDate == "" {
-		fromDate = tally.CurrentFinancialYearStart(time.Now())
-	}
-	if toDate == "" {
-		toDate = tally.CurrentFinancialYearEnd(time.Now())
-	}
-
-	// 1. Reuse cached master ledger list (already populated by ResolveLedgerName) to avoid a second Tally HTTP call
-	var parent string
-	var openingBalance float64
-	var foundInCache bool
-
-	if ledgers, lErr := h.tallyClient.ListLedgersForCompany(ctx, company, ""); lErr == nil {
-		for _, l := range ledgers {
-			if strings.EqualFold(strings.TrimSpace(l.Name), ledgerName) {
-				parent = l.Parent
-				openingBalance = l.OpeningBalance
-				foundInCache = true
-				break
-			}
-		}
-	}
-	if !foundInCache {
-		if ld, ldErr := h.tallyClient.GetLedgerDetailForCompany(ctx, company, ledgerName); ldErr == nil && ld != nil {
-			parent = ld.Parent
-			openingBalance = ld.OpeningBalance
-		} else if ledgerDetails, err := h.tallyClient.GetLedgerForCompany(ctx, company, ledgerName); err == nil && ledgerDetails != nil {
-			parent, openingBalance = extractLedgerParentAndOpening(ledgerDetails, ledgerName)
-		}
-	}
-
-	// 2. Fetch vouchers matching ledger
-	vouchers, err := h.tallyClient.GetLedgerStatementVouchersForCompany(ctx, company, ledgerName, fromDate, toDate)
+	payload, err := h.tallyClient.BuildLedgerStatementResult(
+		ctx,
+		company,
+		ledgerName,
+		req.GetString("from_date", ""),
+		req.GetString("to_date", ""),
+		sortOrder,
+		limit,
+		offset,
+		summaryOnly,
+		maxNarrLen,
+	)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to fetch vouchers for ledger %q: %v", ledgerName, err)), nil
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	entries := make([]tally.LedgerStatementEntry, 0)
-	var totalDebit, totalCredit float64
+	payload = projectFields(payload, req.GetString("fields", ""))
+	outStr, err := h.formatOutput(payload, req.GetString("format", ""))
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
 
-	isTarget := func(name string) bool {
-		return strings.EqualFold(strings.TrimSpace(name), ledgerName)
+// HandleListGroups lists account groups with hierarchy and opening/closing balances.
+func (h *ToolHandlers) HandleListGroups(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	company, err := h.resolveCompany(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	fromDate, toDate := tally.ResolveDateRange(req.GetString("from_date", ""), req.GetString("to_date", ""), time.Now())
+	groups, err := h.tallyClient.ListGroupsWithDates(ctx, company, fromDate, toDate)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to list groups: %v", err)), nil
 	}
 
-	for _, v := range vouchers {
-		var matchedAmount float64
-		var matched bool
-		var contraLedgers []string
+	parentFilter := strings.TrimSpace(req.GetString("parent", ""))
+	if parentFilter != "" {
+		parentFilter = tally.NormalizeGroupAlias(parentFilter)
+	}
+	search := strings.ToLower(strings.TrimSpace(req.GetString("search", "")))
+	nonZeroOnly := getBoolDefault(req, "non_zero_only", false)
 
-		for _, e := range v.LedgerEntries {
-			if isTarget(e.LedgerName) {
-				matchedAmount += e.Amount
-				matched = true
-			} else if strings.TrimSpace(e.LedgerName) != "" {
-				contraLedgers = append(contraLedgers, strings.TrimSpace(e.LedgerName))
-			}
-		}
-
-		if !matched {
-			if isTarget(v.PartyLedgerName) {
-				matchedAmount = v.Amount
-				matched = true
-			}
-		}
-
-		if !matched {
+	filtered := make([]tally.GroupItem, 0, len(groups))
+	for _, g := range groups {
+		if nonZeroOnly && g.OpeningBalance == 0 && g.ClosingBalance == 0 {
 			continue
 		}
-
-		if len(contraLedgers) == 0 && !isTarget(v.PartyLedgerName) && strings.TrimSpace(v.PartyLedgerName) != "" {
-			contraLedgers = append(contraLedgers, strings.TrimSpace(v.PartyLedgerName))
+		if parentFilter != "" && !strings.EqualFold(strings.TrimSpace(g.Parent), parentFilter) {
+			continue
 		}
-		seenContra := make(map[string]bool)
-		var uniqueContras []string
-		for _, c := range contraLedgers {
-			if !seenContra[c] {
-				seenContra[c] = true
-				uniqueContras = append(uniqueContras, c)
-			}
+		if search != "" &&
+			!strings.Contains(strings.ToLower(g.Name), search) &&
+			!strings.Contains(strings.ToLower(g.Parent), search) {
+			continue
 		}
-		contraStr := strings.Join(uniqueContras, ", ")
-
-		var debit, credit float64
-		if matchedAmount < 0 {
-			debit = math.Abs(matchedAmount)
-		} else {
-			credit = matchedAmount
-		}
-
-		totalDebit += debit
-		totalCredit += credit
-
-		dateStr := v.Date
-		if len(dateStr) == 8 && !strings.Contains(dateStr, "-") {
-			dateStr = fmt.Sprintf("%s-%s-%s", dateStr[0:4], dateStr[4:6], dateStr[6:8])
-		}
-
-		entries = append(entries, tally.LedgerStatementEntry{
-			Date:          dateStr,
-			VoucherType:   v.VoucherTypeName,
-			VoucherNumber: v.VoucherNumber,
-			ContraLedger:  contraStr,
-			Debit:         math.Round(debit*100) / 100,
-			Credit:        math.Round(credit*100) / 100,
-			Narration:     v.Narration,
-		})
+		filtered = append(filtered, g)
 	}
 
-	// Sort entries chronologically (Date asc, VoucherNumber asc) to compute accurate running balances
-	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].Date != entries[j].Date {
-			return entries[i].Date < entries[j].Date
-		}
-		return entries[i].VoucherNumber < entries[j].VoucherNumber
-	})
-
-	running := openingBalance
-	for i := range entries {
-		running = running + entries[i].Credit - entries[i].Debit
-		entries[i].Balance = math.Round(math.Abs(running)*100) / 100
-		if running < 0 {
-			entries[i].BalanceType = "Dr"
-		} else {
-			entries[i].BalanceType = "Cr"
-		}
-	}
-
-	totalDebit = math.Round(totalDebit*100) / 100
-	totalCredit = math.Round(totalCredit*100) / 100
-
-	net := openingBalance + totalCredit - totalDebit
-	closingBalance := math.Round(math.Abs(net)*100) / 100
-	closingBalanceType := "Cr"
-	if net < 0 {
-		closingBalanceType = "Dr"
-	}
-
-	openingBalanceType := "Cr"
-	if openingBalance < 0 {
-		openingBalanceType = "Dr"
-	}
-
-	sortOrder := strings.ToLower(strings.TrimSpace(req.GetString("sort", "asc")))
-	if sortOrder == "desc" {
-		for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
-			entries[i], entries[j] = entries[j], entries[i]
-		}
-	}
-
-	totalEntries := len(entries)
-	limit := req.GetInt("limit", 50)
+	total := len(filtered)
+	limit := req.GetInt("limit", 100)
 	if limit <= 0 {
-		limit = 50
+		limit = 100
 	}
 	if limit > 500 {
 		limit = 500
@@ -623,103 +668,71 @@ func (h *ToolHandlers) HandleGetLedgerStatement(ctx context.Context, req mcp.Cal
 	if offset < 0 {
 		offset = 0
 	}
-	summaryOnly := getBoolDefault(req, "summary_only", true)
-	maxNarrLen := getIntDefault(req, "max_narration_len", 80)
-
-	var pagedEntries []tally.LedgerStatementEntry
+	var paged []tally.GroupItem
 	var hasMore bool
 	var nextOffset *int
-	if offset < totalEntries {
+	if offset < total {
 		end := offset + limit
-		if end > totalEntries {
-			end = totalEntries
+		if end > total {
+			end = total
 		}
-		pagedEntries = entries[offset:end]
-		if end < totalEntries {
+		paged = filtered[offset:end]
+		if end < total {
 			hasMore = true
-			nextVal := end
-			nextOffset = &nextVal
+			n := end
+			nextOffset = &n
 		}
 	} else {
-		pagedEntries = []tally.LedgerStatementEntry{}
+		paged = []tally.GroupItem{}
 	}
 
-	var statementNote string
-	if totalEntries == 0 {
-		statementNote = fmt.Sprintf("0 entries in %s..%s; try broadening from_date/to_date (e.g. 'last_fy' or explicit YYYYMMDD)", fromDate, toDate)
+	res := map[string]any{
+		"company":  company,
+		"total":    total,
+		"count":    len(paged),
+		"offset":   offset,
+		"limit":    limit,
+		"has_more": hasMore,
+		"groups":   paged,
 	}
-
-	var payload any
-	if summaryOnly {
-		compactEntries := make([]tally.CompactStatementEntry, len(pagedEntries))
-		for i, e := range pagedEntries {
-			signedAmt := e.Credit
-			if e.Debit > 0 && e.Credit == 0 {
-				signedAmt = -e.Debit
-			} else if e.Debit > 0 {
-				signedAmt = math.Round((e.Credit-e.Debit)*100) / 100
-			}
-			compactDate := strings.ReplaceAll(e.Date, "-", "")
-			compactEntries[i] = tally.CompactStatementEntry{
-				Date:          compactDate,
-				VoucherType:   e.VoucherType,
-				VoucherNumber: e.VoucherNumber,
-				ContraLedger:  e.ContraLedger,
-				Amount:        signedAmt,
-				Balance:       e.Balance,
-				BalanceType:   e.BalanceType,
-				Narration:     truncateString(e.Narration, maxNarrLen),
-			}
-		}
-		payload = tally.CompactLedgerStatementResult{
-			LedgerName:         ledgerName,
-			ResolvedFrom:       correctedFrom,
-			Parent:             parent,
-			FromDate:           fromDate,
-			ToDate:             toDate,
-			OpeningBalance:     math.Round(math.Abs(openingBalance)*100) / 100,
-			OpeningBalanceType: openingBalanceType,
-			TotalDebit:         totalDebit,
-			TotalCredit:        totalCredit,
-			ClosingBalance:     closingBalance,
-			ClosingBalanceType: closingBalanceType,
-			EntriesCount:       len(compactEntries),
-			TotalEntries:       totalEntries,
-			Limit:              limit,
-			Offset:             offset,
-			HasMore:            hasMore,
-			NextOffset:         nextOffset,
-			Note:               statementNote,
-			Entries:            compactEntries,
-		}
-	} else {
-		payload = tally.LedgerStatementResult{
-			LedgerName:         ledgerName,
-			ResolvedFrom:       correctedFrom,
-			Parent:             parent,
-			FromDate:           fromDate,
-			ToDate:             toDate,
-			OpeningBalance:     math.Round(math.Abs(openingBalance)*100) / 100,
-			OpeningBalanceType: openingBalanceType,
-			TotalDebit:         totalDebit,
-			TotalCredit:        totalCredit,
-			ClosingBalance:     closingBalance,
-			ClosingBalanceType: closingBalanceType,
-			EntriesCount:       len(pagedEntries),
-			TotalEntries:       totalEntries,
-			Limit:              limit,
-			Offset:             offset,
-			HasMore:            hasMore,
-			NextOffset:         nextOffset,
-			Note:               statementNote,
-			Entries:            pagedEntries,
-		}
+	if nextOffset != nil {
+		res["next_offset"] = *nextOffset
 	}
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
 
-	payload = projectFields(payload, req.GetString("fields", ""))
-	outStr, err := h.formatOutput(payload, req.GetString("format", ""))
+// HandleGetGroupSummary returns a group's balances, sub-groups, and child ledgers.
+func (h *ToolHandlers) HandleGetGroupSummary(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	company, err := h.resolveCompany(ctx, req)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
+	}
+	groupName, err := req.RequireString("group")
+	if err != nil || strings.TrimSpace(groupName) == "" {
+		return mcp.NewToolResultError("Argument 'group' is required"), nil
+	}
+	includeSub := getBoolDefault(req, "include_sub_groups", true)
+	nonZeroOnly := getBoolDefault(req, "non_zero_only", false)
+
+	res, err := h.tallyClient.GetGroupSummaryForCompany(
+		ctx,
+		company,
+		groupName,
+		req.GetString("from_date", ""),
+		req.GetString("to_date", ""),
+		includeSub,
+		nonZeroOnly,
+	)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get group summary: %v", err)), nil
+	}
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
 	}
 	return mcp.NewToolResultText(outStr), nil
 }
@@ -1395,9 +1408,10 @@ func (h *ToolHandlers) HandleGeneratePDF(ctx context.Context, req mcp.CallToolRe
 	}), nil
 }
 
-// HandleCreateLedger creates a new ledger account in Tally.
+// HandleCreateLedger creates a new ledger account in Tally (with optional GST, PAN, address, and bill-wise settings).
 func (h *ToolHandlers) HandleCreateLedger(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if h.isReadOnly(ctx) {
+	dryRun := parseDryRun(req, false)
+	if !dryRun && h.isReadOnly(ctx) {
 		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode (tally_create_ledger is disabled)."), nil
 	}
 	company, err := h.resolveCompany(ctx, req)
@@ -1405,40 +1419,119 @@ func (h *ToolHandlers) HandleCreateLedger(ctx context.Context, req mcp.CallToolR
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	name, err := req.RequireString("name")
-	if err != nil {
+	if err != nil || strings.TrimSpace(name) == "" {
 		return mcp.NewToolResultError("Ledger 'name' is required"), nil
 	}
 	parent, err := req.RequireString("parent")
-	if err != nil {
+	if err != nil || strings.TrimSpace(parent) == "" {
 		return mcp.NewToolResultError("Ledger 'parent' group is required (e.g., 'Sundry Debtors', 'Sundry Creditors')"), nil
 	}
-	parent = tally.NormalizeGroupAlias(parent)
-	openingBalance := req.GetFloat("opening_balance", 0.0)
 
-	resp, err := h.tallyClient.CreateLedgerForCompany(ctx, company, name, parent, openingBalance)
+	opts := extractLedgerWriteOptions(req, company)
+	opts.Name = name
+	opts.Parent = parent
+
+	res, err := h.tallyClient.CreateLedgerWithOptions(ctx, opts, dryRun)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to create ledger %q: %v", name, err)), nil
 	}
 
-	if res := tally.ParseImportResult([]byte(resp)); res != nil {
-		if res.Errors > 0 || res.Exceptions > 0 || res.LineError != "" {
-			return mcp.NewToolResultError(fmt.Sprintf("Tally reported import errors for ledger %q: errors=%d exceptions=%d line_error=%q", name, res.Errors, res.Exceptions, res.LineError)), nil
-		}
-		if res.Created > 0 || res.Altered > 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("Ledger %q under %q created successfully (created=%d, altered=%d).", name, parent, res.Created, res.Altered)), nil
-		}
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
+
+// HandleUpdateLedger alters or renames an existing ledger in Tally (supports dry_run).
+func (h *ToolHandlers) HandleUpdateLedger(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	dryRun := parseDryRun(req, false)
+	if !dryRun && h.isReadOnly(ctx) {
+		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode (tally_update_ledger is disabled)."), nil
+	}
+	company, err := h.resolveCompany(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	name, err := req.RequireString("name")
+	if err != nil || strings.TrimSpace(name) == "" {
+		return mcp.NewToolResultError("Ledger 'name' is required"), nil
 	}
 
-	if strings.Contains(resp, "<STATUS>1</STATUS>") {
-		return mcp.NewToolResultText(fmt.Sprintf("Ledger %q under %q created successfully.", name, parent)), nil
+	opts := extractLedgerWriteOptions(req, company)
+	opts.Name = name
+
+	res, err := h.tallyClient.UpdateLedgerForCompany(ctx, opts, dryRun)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to update ledger %q: %v", name, err)), nil
+	}
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
+
+// HandleDeleteLedger deletes an unused ledger after verifying 0 balances and 0 vouchers.
+func (h *ToolHandlers) HandleDeleteLedger(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	dryRun := parseDryRun(req, false)
+	if !dryRun && h.isReadOnly(ctx) {
+		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode (tally_delete_ledger is disabled)."), nil
+	}
+	company, err := h.resolveCompany(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	name, err := req.RequireString("name")
+	if err != nil || strings.TrimSpace(name) == "" {
+		return mcp.NewToolResultError("Ledger 'name' is required"), nil
 	}
 
-	return mcp.NewToolResultText(fmt.Sprintf("Tally Response:\n%s", resp)), nil
+	res, err := h.tallyClient.DeleteLedgerForCompany(ctx, company, name, dryRun)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
+
+// HandleMergeLedgers safely migrates vouchers and opening balances from source_ledger into target_ledger and deletes source_ledger.
+func (h *ToolHandlers) HandleMergeLedgers(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	dryRun := parseDryRun(req, false)
+	if !dryRun && h.isReadOnly(ctx) {
+		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode (tally_merge_ledgers is disabled)."), nil
+	}
+	company, err := h.resolveCompany(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	src, err := req.RequireString("source_ledger")
+	if err != nil || strings.TrimSpace(src) == "" {
+		return mcp.NewToolResultError("Argument 'source_ledger' is required"), nil
+	}
+	tgt, err := req.RequireString("target_ledger")
+	if err != nil || strings.TrimSpace(tgt) == "" {
+		return mcp.NewToolResultError("Argument 'target_ledger' is required"), nil
+	}
+	requireSameGSTIN := getBoolDefault(req, "require_same_gstin", true)
+
+	res, err := h.tallyClient.MergeLedgersForCompany(ctx, company, src, tgt, requireSameGSTIN, dryRun)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Ledger merge failed: %v", err)), nil
+	}
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
 }
 
 // HandleCreateVoucher validates, resolves ledgers, and previews (default) or imports a voucher into Tally.
 func (h *ToolHandlers) HandleCreateVoucher(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	preview := getBoolDefault(req, "preview", true)
+	preview := parseDryRun(req, true)
 	if !preview && h.isReadOnly(ctx) {
 		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode (posting vouchers with preview=false is disabled)."), nil
 	}
@@ -1458,39 +1551,16 @@ func (h *ToolHandlers) HandleCreateVoucher(ctx context.Context, req mcp.CallTool
 		return mcp.NewToolResultError("Argument 'entries' is required (array of {ledger_name, amount, is_debit})"), nil
 	}
 
-	var entries []tally.VoucherEntryInput
-	switch v := rawEntriesVal.(type) {
-	case string:
-		if uErr := json.Unmarshal([]byte(v), &entries); uErr != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Invalid JSON in 'entries': %v", uErr)), nil
-		}
-	default:
-		b, mErr := json.Marshal(v)
-		if mErr != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Invalid 'entries' format: %v", mErr)), nil
-		}
-		if uErr := json.Unmarshal(b, &entries); uErr != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Invalid 'entries' structure: %v", uErr)), nil
-		}
+	entries, err := decodeJSONArg[[]tally.VoucherEntryInput](rawEntriesVal)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Invalid 'entries' format: %v", err)), nil
 	}
 
 	var inventoryEntries []tally.InventoryEntryInput
 	if rawInvVal, hasInv := args["inventory_entries"]; hasInv && rawInvVal != nil {
-		switch v := rawInvVal.(type) {
-		case string:
-			if strings.TrimSpace(v) != "" {
-				if uErr := json.Unmarshal([]byte(v), &inventoryEntries); uErr != nil {
-					return mcp.NewToolResultError(fmt.Sprintf("Invalid JSON in 'inventory_entries': %v", uErr)), nil
-				}
-			}
-		default:
-			b, mErr := json.Marshal(v)
-			if mErr != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Invalid 'inventory_entries' format: %v", mErr)), nil
-			}
-			if uErr := json.Unmarshal(b, &inventoryEntries); uErr != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Invalid 'inventory_entries' structure: %v", uErr)), nil
-			}
+		inventoryEntries, err = decodeJSONArg[[]tally.InventoryEntryInput](rawInvVal)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Invalid 'inventory_entries' format: %v", err)), nil
 		}
 	}
 
@@ -1546,9 +1616,135 @@ func (h *ToolHandlers) HandleGetGSTSummary(ctx context.Context, req mcp.CallTool
 	return mcp.NewToolResultText(outStr), nil
 }
 
+// HandleUpdateVoucher updates an existing voucher by master_id (date, narration, reference, voucher_number, entries, or reclassify_ledger).
+func (h *ToolHandlers) HandleUpdateVoucher(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	dryRun := parseDryRun(req, false)
+	if !dryRun && h.isReadOnly(ctx) {
+		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode (tally_update_voucher is disabled)."), nil
+	}
+	company, err := h.resolveCompany(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	masterID, err := req.RequireString("master_id")
+	if err != nil || strings.TrimSpace(masterID) == "" {
+		return mcp.NewToolResultError("Argument 'master_id' is required for tally_update_voucher"), nil
+	}
+
+	args := req.GetArguments()
+	var entries []tally.VoucherEntryInput
+	if args != nil {
+		if rawVal, ok := args["entries"]; ok && rawVal != nil {
+			entries, err = decodeJSONArg[[]tally.VoucherEntryInput](rawVal)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("Invalid 'entries' format: %v", err)), nil
+			}
+		}
+	}
+
+	var reclassify *tally.ReclassifyLedgerSpec
+	if args != nil {
+		if rawRec, ok := args["reclassify_ledger"]; ok && rawRec != nil {
+			switch rv := rawRec.(type) {
+			case string:
+				if strings.TrimSpace(rv) != "" {
+					if strings.HasPrefix(strings.TrimSpace(rv), "{") {
+						parsed, rErr := decodeJSONArg[tally.ReclassifyLedgerSpec](rv)
+						if rErr != nil {
+							return mcp.NewToolResultError(fmt.Sprintf("Invalid JSON in 'reclassify_ledger': %v", rErr)), nil
+						}
+						reclassify = &parsed
+					} else {
+						reclassify = &tally.ReclassifyLedgerSpec{
+							FromLedger: rv,
+							ToLedger:   req.GetString("to_ledger", ""),
+						}
+					}
+				}
+			default:
+				parsed, rErr := decodeJSONArg[tally.ReclassifyLedgerSpec](rv)
+				if rErr != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("Invalid 'reclassify_ledger' structure: %v", rErr)), nil
+				}
+				reclassify = &parsed
+			}
+		} else if fromL := strings.TrimSpace(req.GetString("from_ledger", "")); fromL != "" {
+			reclassify = &tally.ReclassifyLedgerSpec{
+				FromLedger: fromL,
+				ToLedger:   req.GetString("to_ledger", ""),
+			}
+		}
+		if reclassify != nil {
+			if rawBills, ok := args["bill_allocations"]; ok && rawBills != nil && len(reclassify.BillAllocations) == 0 {
+				bills, bErr := decodeJSONArg[[]tally.BillAllocationInput](rawBills)
+				if bErr != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("Invalid 'bill_allocations' format: %v", bErr)), nil
+				}
+				reclassify.BillAllocations = bills
+			}
+		}
+	}
+
+	hasRef := false
+	hasNarr := false
+	if args != nil {
+		_, hasRef = args["reference"]
+		_, hasNarr = args["narration"]
+	}
+
+	res, err := h.tallyClient.UpdateVoucherForCompany(ctx, tally.UpdateVoucherOptions{
+		Company:          company,
+		MasterID:         masterID,
+		NewDate:          req.GetString("new_date", ""),
+		NewVoucherNumber: req.GetString("voucher_number", ""),
+		Reference:        req.GetString("reference", ""),
+		HasReference:     hasRef,
+		PartyLedger:      req.GetString("party_ledger", ""),
+		Narration:        req.GetString("narration", ""),
+		HasNarration:     hasNarr,
+		Entries:          entries,
+		Reclassify:       reclassify,
+		DryRun:           dryRun,
+	})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Voucher update failed: %v", err)), nil
+	}
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
+
+// HandleDeleteVoucher deletes a single voucher by master_id (supports dry_run=true).
+func (h *ToolHandlers) HandleDeleteVoucher(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	dryRun := parseDryRun(req, false)
+	if !dryRun && h.isReadOnly(ctx) {
+		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode (tally_delete_voucher is disabled)."), nil
+	}
+	company, err := h.resolveCompany(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	masterID, err := req.RequireString("master_id")
+	if err != nil || strings.TrimSpace(masterID) == "" {
+		return mcp.NewToolResultError("Argument 'master_id' is required for tally_delete_voucher"), nil
+	}
+
+	res, err := h.tallyClient.DeleteVoucherForCompany(ctx, company, masterID, dryRun)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Voucher delete failed: %v", err)), nil
+	}
+	outStr, fmtErr := h.formatOutput(res, req.GetString("format", ""))
+	if fmtErr != nil {
+		return mcp.NewToolResultError(fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(outStr), nil
+}
+
 // HandleAlterVoucher previews or alters an existing Tally voucher.
 func (h *ToolHandlers) HandleAlterVoucher(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	preview := getBoolDefault(req, "preview", true)
+	preview := parseDryRun(req, true)
 	if !preview && h.isReadOnly(ctx) {
 		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode (altering vouchers with preview=false is disabled)."), nil
 	}
@@ -1560,21 +1756,9 @@ func (h *ToolHandlers) HandleAlterVoucher(ctx context.Context, req mcp.CallToolR
 	var entries []tally.VoucherEntryInput
 	if args := req.GetArguments(); args != nil {
 		if rawVal, ok := args["entries"]; ok && rawVal != nil {
-			switch v := rawVal.(type) {
-			case string:
-				if strings.TrimSpace(v) != "" {
-					if uErr := json.Unmarshal([]byte(v), &entries); uErr != nil {
-						return mcp.NewToolResultError(fmt.Sprintf("Invalid JSON in 'entries': %v", uErr)), nil
-					}
-				}
-			default:
-				b, mErr := json.Marshal(v)
-				if mErr != nil {
-					return mcp.NewToolResultError(fmt.Sprintf("Invalid 'entries' format: %v", mErr)), nil
-				}
-				if uErr := json.Unmarshal(b, &entries); uErr != nil {
-					return mcp.NewToolResultError(fmt.Sprintf("Invalid 'entries' structure: %v", uErr)), nil
-				}
+			entries, err = decodeJSONArg[[]tally.VoucherEntryInput](rawVal)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("Invalid 'entries' format: %v", err)), nil
 			}
 		}
 	}
@@ -1605,7 +1789,7 @@ func (h *ToolHandlers) HandleAlterVoucher(ctx context.Context, req mcp.CallToolR
 
 // HandleCancelVoucher previews or cancels an existing Tally voucher.
 func (h *ToolHandlers) HandleCancelVoucher(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	preview := getBoolDefault(req, "preview", true)
+	preview := parseDryRun(req, true)
 	if !preview && h.isReadOnly(ctx) {
 		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode (cancelling vouchers with preview=false is disabled)."), nil
 	}
@@ -1636,7 +1820,7 @@ func (h *ToolHandlers) HandleCancelVoucher(ctx context.Context, req mcp.CallTool
 
 // HandleCreateStockItem previews or creates a stock item master in Tally.
 func (h *ToolHandlers) HandleCreateStockItem(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	preview := getBoolDefault(req, "preview", true)
+	preview := parseDryRun(req, true)
 	if !preview && h.isReadOnly(ctx) {
 		return mcp.NewToolResultError("Operation blocked: TallyMCP is running in read-only mode (creating stock items with preview=false is disabled)."), nil
 	}
